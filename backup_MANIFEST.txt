@@ -1,0 +1,4 @@
+﻿Backup creado: backup_safe_20260507_034557.zip
+Excluidos: .env, *.csv, *state*.json (incluye offsets/estados)
+Python usado: C:\\Users\\gSuss\\AppData\\Local\\Python\\bin\\python.exe
+Para usarlo fácil mañana (PowerShell): set-alias python 'C:\\Users\\gSuss\\AppData\\Local\\Python\\bin\\python.exe'

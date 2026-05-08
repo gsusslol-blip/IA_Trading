@@ -1,0 +1,10 @@
+---
+description: Cuando el usuario pide "enviame" / "envíame", debe ser por Telegram.
+alwaysApply: true
+---
+
+# Entrega por Telegram
+
+Si el usuario dice **envíame**, **enviame**, **mandame al telegram**, **pasame por telegram**, etc., quiere el resultado **enviado al Telegram** usando el proyecto (`send_tg_preview.py`, `signal_now.py`, o `_telegram_send` con `.env` cargado), **no** solo texto en el chat ni solo imprimir en consola.
+
+Antes de enviar: `local_env.load_env_file()`, token/chat en `.env`. Si falla el envío, reportar el error `[TG]` y no dar por hecho que llegó.
