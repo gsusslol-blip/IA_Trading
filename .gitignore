@@ -44,3 +44,4 @@ ia_idle_tune.log
 ia_auto_trade_loop.lock
 ia_telegram_panic_offset.json
 execution_quality.csv
+ia_auto_trade_loop_runtime.log
