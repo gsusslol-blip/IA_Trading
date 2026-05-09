@@ -30,6 +30,8 @@ from typing import Any
 
 import MetaTrader5 as mt5
 
+from mt5_prices import mt5_copy_rates_from_pos_cached
+
 from signal_analysis import _atr_series, _true_ranges
 
 
@@ -152,7 +154,7 @@ def _range_compression(highs: list[float], lows: list[float], lookback: int) -> 
 
 
 def fetch_rates(symbol: str, timeframe: int, count: int):
-    r = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)
+    r = mt5_copy_rates_from_pos_cached(symbol, timeframe, 0, count)
     if r is None or len(r) < count // 2:
         return None
     highs = [float(x["high"]) for x in r]
@@ -474,5 +476,37 @@ def regime_gate_should_skip(symbol: str) -> tuple[bool, str]:
     """
     ok, snap = evaluate_regime_for_trend_module(symbol)
     if ok:
+        return False, ""
+    return True, f"{snap.label.value}|{snap.source}|{snap.detail}"
+
+
+def regime_gate_should_skip_from_hlc(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+) -> tuple[bool, str]:
+    """
+    Misma semántica que regime_gate_should_skip pero sin MT5: usa solo OHLC ya alineados al instante t.
+    Si IA_REGIME_ENABLE=0 → no skip. Modo ml/hybrid: en replay se usan solo reglas sobre estos datos
+    (sin modelo ML salvo que lo integres aparte).
+    """
+    if os.environ.get("IA_REGIME_ENABLE", "0").strip().lower() not in ("1", "true", "yes"):
+        return False, ""
+    mode = os.environ.get("IA_REGIME_MODE", "rules").strip().lower()
+    if mode in ("ml", "hybrid"):
+        snap = classify_regime_rules_from_hlc(highs, lows, closes)
+        snap = RegimeSnapshot(
+            snap.label,
+            snap.adx,
+            snap.atr_pct_rank,
+            snap.z_score,
+            snap.range_compression,
+            "replay_rules",
+            snap.detail + f" | replay({mode})",
+        )
+    else:
+        snap = classify_regime_rules_from_hlc(highs, lows, closes)
+    allowed = regime_trend_allowed(snap)
+    if allowed:
         return False, ""
     return True, f"{snap.label.value}|{snap.source}|{snap.detail}"

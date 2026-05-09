@@ -11,12 +11,75 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
+import pandas as pd
 
 from local_env import load_env_file
 
 SYMBOLS = ("XAUUSD",)
 BOT_CSV = os.environ.get("BOT_CSV", "bot_demo_log.csv")
 BOT_MAGIC = int(os.environ.get("BOT_MAGIC", "260505"))
+
+# copy_rates desde posición 0: se reutiliza mientras la vela más reciente (time) no cambie.
+_rates_ttl_cache: dict[str, tuple[int, object]] = {}
+
+
+def mt5_rates_cache_clear() -> None:
+    _rates_ttl_cache.clear()
+
+
+def mt5_rates_cache_enabled() -> bool:
+    """Por defecto activado (menos llamadas al terminal por ronda); IA_MT5_RATES_CACHE=0 desactiva."""
+    raw = os.environ.get("IA_MT5_RATES_CACHE", "1").strip().lower()
+    return raw not in ("0", "false", "no")
+
+
+def mt5_copy_rates_from_pos_cached(
+    symbol: str,
+    timeframe: int,
+    start_pos: int,
+    count: int,
+):
+    """Wrapper de copy_rates_from_pos con caché por (símbolo, TF, count) hasta nueva vela.
+
+    Con caché activa: una lectura mínima (1 vela) para el ``time`` de la barra actual; si no
+    cambió respecto al hit, se devuelve el bloque cacheado sin volver a pedir ``count`` velas.
+    """
+    if start_pos != 0 or not mt5_rates_cache_enabled():
+        return mt5.copy_rates_from_pos(symbol, timeframe, start_pos, count)
+    key = f"{symbol}\0{timeframe}\0{count}"
+    probe = mt5.copy_rates_from_pos(symbol, timeframe, 0, 1)
+    if probe is None or len(probe) == 0:
+        return probe
+    # Serie ordenada vieja→nueva: última fila = vela más reciente (en formación o recién cerrada).
+    t_anchor = int(probe[-1]["time"])
+
+    hit = _rates_ttl_cache.get(key)
+    if hit is not None and hit[0] == t_anchor:
+        return hit[1]
+
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)
+    if rates is None or len(rates) == 0:
+        return rates
+    _rates_ttl_cache[key] = (t_anchor, rates)
+    return rates
+
+
+def get_rates_optimized(symbol: str, timeframe: int, n_bars: int) -> pd.DataFrame | None:
+    """
+    Precio OHLCV como DataFrame (columna ``time`` en segundos unix, igual que copy_rates).
+
+    Si IA_MT5_RATES_CACHE=1, reaprovecha bloques hasta que cambie el timestamp de la última vela.
+    Alias de compatibilidad: ``get_historical_data`` (misma firma).
+    """
+    rates = mt5_copy_rates_from_pos_cached(symbol, timeframe, 0, n_bars)
+    if rates is None or len(rates) == 0:
+        return None
+    return pd.DataFrame(rates)
+
+
+def get_historical_data(symbol: str, timeframe: int, n_bars: int) -> pd.DataFrame | None:
+    """Nombre alternativo esperado por scripts externos / backtests."""
+    return get_rates_optimized(symbol, timeframe, n_bars)
 
 
 def _env_winrate_target() -> float:
@@ -1144,8 +1207,8 @@ def fetch_strategy_snapshot(requested_symbol: str | None = None) -> StrategySnap
 
     trend_tf = mt5.TIMEFRAME_M15
     entry_tf = mt5.TIMEFRAME_M5
-    trend_rates = mt5.copy_rates_from_pos(sym, trend_tf, 0, max(slow, fast) + 10)
-    entry_rates = mt5.copy_rates_from_pos(sym, entry_tf, 0, max(slow, fast) + 10)
+    trend_rates = mt5_copy_rates_from_pos_cached(sym, trend_tf, 0, max(slow, fast) + 10)
+    entry_rates = mt5_copy_rates_from_pos_cached(sym, entry_tf, 0, max(slow, fast) + 10)
     if trend_rates is None or entry_rates is None:
         raise RuntimeError("No se pudieron leer velas")
     if len(trend_rates) < slow + 5 or len(entry_rates) < slow + 5:
@@ -1536,7 +1599,7 @@ def run_demo_bot(symbol: str) -> None:
             continue
 
         # Trend filter on M15
-        trend_rates = mt5.copy_rates_from_pos(symbol, trend_tf, 0, max(slow, fast) + 10)
+        trend_rates = mt5_copy_rates_from_pos_cached(symbol, trend_tf, 0, max(slow, fast) + 10)
         if trend_rates is None or len(trend_rates) < slow + 5:
             _log_csv(f"{datetime.now(timezone.utc).isoformat()},{symbol},{bid},{ask},,,NO_TREND_RATES,")
             time.sleep(poll_s)
@@ -1547,7 +1610,7 @@ def run_demo_bot(symbol: str) -> None:
         trend_slope = _slope(trend_closes, lookback=10) or 0.0
 
         # Entry signals on M5
-        entry_rates = mt5.copy_rates_from_pos(symbol, entry_tf, 0, max(slow, fast) + 10)
+        entry_rates = mt5_copy_rates_from_pos_cached(symbol, entry_tf, 0, max(slow, fast) + 10)
         if entry_rates is None or len(entry_rates) < slow + 5:
             _log_csv(f"{datetime.now(timezone.utc).isoformat()},{symbol},{bid},{ask},,,NO_RATES,")
             time.sleep(poll_s)

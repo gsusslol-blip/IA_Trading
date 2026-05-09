@@ -6,10 +6,14 @@ import unittest
 
 import pandas as pd
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 from ia_scanner_loop import (
     _filtro_h4_ema_alineado,
     _filtro_m15_momentum_vela,
     _h4_ema_last,
+    es_horario_seguro,
 )
 
 
@@ -31,6 +35,26 @@ class TestH4Ema(unittest.TestCase):
         # (102-100)/100*100 = 2%
         self.assertTrue(_filtro_h4_ema_alineado("BUY", 102.0, 100.0, min_dist_pct=1.5))
         self.assertFalse(_filtro_h4_ema_alineado("BUY", 101.0, 100.0, min_dist_pct=1.5))
+
+
+class TestHorarioSeguro(unittest.TestCase):
+    def test_same_day_window(self) -> None:
+        with patch.dict("os.environ", {"IA_SCAN_HOUR_START": "9", "IA_SCAN_HOUR_END": "18"}, clear=False):
+            with patch("ia_scanner_loop.datetime") as mdt:
+                mdt.now.return_value = SimpleNamespace(hour=12)
+                self.assertTrue(es_horario_seguro())
+                mdt.now.return_value = SimpleNamespace(hour=7)
+                self.assertFalse(es_horario_seguro())
+
+    def test_overnight_window(self) -> None:
+        with patch.dict("os.environ", {"IA_SCAN_HOUR_START": "22", "IA_SCAN_HOUR_END": "6"}, clear=False):
+            with patch("ia_scanner_loop.datetime") as mdt:
+                mdt.now.return_value = SimpleNamespace(hour=23)
+                self.assertTrue(es_horario_seguro())
+                mdt.now.return_value = SimpleNamespace(hour=5)
+                self.assertTrue(es_horario_seguro())
+                mdt.now.return_value = SimpleNamespace(hour=12)
+                self.assertFalse(es_horario_seguro())
 
 
 class TestM15Momentum(unittest.TestCase):

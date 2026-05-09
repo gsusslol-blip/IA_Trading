@@ -28,6 +28,8 @@ python optuna_walkforward.py -> python ia_auto_trade_loop.py y verificar "Config
   IA_AUTO_RISK_BUNDLE_PERCENT=5 — % del equity repartido en IA_AUTO_RISK_BUNDLE_TRADES operaciones (riesgo por trade = bundle/trades).
   IA_AUTO_RISK_BUNDLE_TRADES=5
   IA_AUTO_MAX_TRADES=5 — opcional; corta el bucle tras N órdenes enviadas ok.
+  IA_EXEC_QUALITY_ENABLE / IA_EXEC_QUALITY_CSV — log CSV de precio pedido vs ejecutado y spread (trade_audit).
+
   IA_AUTO_MULTI_PER_ROUND=1 — en cada pasada de escaneo, intentar todos los símbolos con señal (no parar en la primera orden).
   IA_AUTO_BURST_DELAY_S=3 — pausa entre órdenes en la misma ronda (varios símbolos u oportunidades seguidas).
   IA_AUTO_STACK_SAME_SYMBOL=0 — si 1, ignora “ya hay posición” y permite otra orden en el mismo símbolo (solo si tu cuenta lo permite; más riesgo).
@@ -35,7 +37,9 @@ python optuna_walkforward.py -> python ia_auto_trade_loop.py y verificar "Config
   DEVIATION=20
   IA_AUTO_MAX_SPREAD_POINTS — mismo criterio que MAX_SPREAD_POINTS del bot (default 50); 0 = sin filtro
 
-Opcional: IA_SCAN_HOUR_START / IA_SCAN_HOUR_END / IA_AUTO_USE_HOURS=0
+Opcional: IA_SCAN_HOUR_START / IA_SCAN_HOUR_END (si START > END, ventana cruza medianoche) / IA_AUTO_USE_HOURS=0
+Opcional: IA_AUTO_SINGLE_INSTANCE=1 (default), IA_AUTO_LOCK_FILE — una sola instancia del bot;
+  IA_AUTO_SPREAD_SAMPLE_MAX_MB — rota spread_samples_*.csv al superar el tamaño (default 8).
 Opcional: SENTIMENT_FILTER=1 — filtra con sentiment_news (TextBlob; NEWS_API_KEY opcional en NewsAPI)
 Opcional: IA_AUTO_STOP_AT=22:00 — hora local del PC; el bucle sale al llegar esa hora y
   puede enviar reporte Telegram (IA_AUTO_TELEGRAM_REPORT=1, default activo si definís STOP_AT).
@@ -56,6 +60,10 @@ Relajación automática si no hay órdenes (después de la apertura NY):
   IA_AUTO_RELAX_ENABLE=1 (default), IA_AUTO_RELAX_AFTER_HOURS=2, IA_AUTO_RELAX_STEP_HOURS=1.5,
   IA_AUTO_RELAX_MAX_LEVEL=3, IA_AUTO_RELAX_OPEN_HOUR=8 (America/New_York), IA_SCAN_VOLUME_RELAX vía nivel 1.
 
+Demo con más señales desde el arranque:
+  IA_BOT_RELAX_SIGNALS=1 — ignora confirmación estricta de volumen M15; desactiva alineación EMA H4 y momentum
+  (ver ia_scanner IA_SCAN_SKIP_VOLUME_CONFIRM).
+
 La distancia SL respeta el mayor entre % de precio (IA_AUTO_SL_PRICE_PERCENT) y
 trade_stops_level×point del bróker.
 
@@ -67,6 +75,7 @@ el volumen baja — mismo riesgo en dinero (mt5.order_calc_profit sobre 1 lote, 
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import os
 import re
@@ -80,7 +89,7 @@ import MetaTrader5 as mt5
 from pathlib import Path
 
 from local_env import apply_optuna_overrides, load_env_file
-from ia_scanner_loop import analizar_ia, es_horario_seguro
+from ia_scanner_loop import analizar_ia, es_horario_seguro, validate_scan_session_env
 from m15_ma_scan import _resolve_scan_symbol
 from ia_auto_memory import sync_memory_from_mt5, summary_from_csv
 from signal_analysis import _atr_series, _true_ranges
@@ -102,6 +111,7 @@ from telegram_listener import (
 from telegram_utils import enviar_alerta_telegram
 from mt5_prices import (
     BOT_MAGIC,
+    mt5_copy_rates_from_pos_cached,
     _allowed_filling_modes_symbol,
     _position_side_for_bot,
     _round_down_to_step,
@@ -109,10 +119,11 @@ from mt5_prices import (
     _telegram_send,
     es_spread_valido,
 )
-from trade_audit import log_trade_entry
+from trade_audit import log_execution_quality, log_trade_entry
 
 
 _IA_PAUSE_POR_COMANDO_TELEGRAM = False
+_LOCK_OWNED = False
 
 
 def _send_status_telegram() -> None:
@@ -246,7 +257,37 @@ def _spread_sample_path(symbol: str) -> Path:
     return root / name
 
 
+def _maybe_rotate_spread_sample_file(path: Path) -> None:
+    raw = os.environ.get("IA_AUTO_SPREAD_SAMPLE_MAX_MB", "8").strip() or "8"
+    try:
+        mb = float(raw)
+    except ValueError:
+        mb = 8.0
+    if mb <= 0:
+        return
+    max_bytes = int(mb * 1024 * 1024)
+    try:
+        if not path.is_file() or path.stat().st_size <= max_bytes:
+            return
+    except OSError:
+        return
+    bak = path.parent / (path.name + ".bak")
+    try:
+        if bak.is_file():
+            bak.unlink()
+        path.rename(bak)
+    except OSError:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _append_spread_sample(path: Path, ts: int, spread_pts: float) -> None:
+    try:
+        _maybe_rotate_spread_sample_file(path)
+    except OSError:
+        pass
     write_header = not path.is_file()
     with path.open("a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -318,6 +359,160 @@ def _spread_dynamic_allows_trade(symbol: str, now_ts: int, cur_spread_pts: float
 def _fail(msg: str, code: int = 1) -> None:
     print(msg, file=sys.stderr)
     raise SystemExit(code)
+
+
+def _process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        # os.kill(pid, 0) no es fiable en Windows para "¿existe el proceso?"
+        try:
+            k = ctypes.windll.kernel32
+            synchronize = 0x00100000
+            h = k.OpenProcess(synchronize, False, pid)
+            if h:
+                k.CloseHandle(h)
+                return True
+            return False
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _single_instance_lock_path() -> Path:
+    raw = os.environ.get("IA_AUTO_LOCK_FILE", "").strip()
+    root = Path(__file__).resolve().parent
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else root / p
+    return root / "ia_auto_trade_loop.lock"
+
+
+def _release_single_instance_lock() -> None:
+    global _LOCK_OWNED
+    if not _LOCK_OWNED:
+        return
+    path = _single_instance_lock_path()
+    try:
+        if path.is_file():
+            parts = path.read_text(encoding="utf-8").strip().split()
+            if parts and int(parts[0]) == os.getpid():
+                path.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
+    _LOCK_OWNED = False
+
+
+def _acquire_single_instance_lock() -> None:
+    global _LOCK_OWNED
+    if os.environ.get("IA_AUTO_SINGLE_INSTANCE", "1").strip().lower() in ("0", "false", "no"):
+        return
+    path = _single_instance_lock_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    mypid = os.getpid()
+    for _ in range(6):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            try:
+                os.write(fd, f"{mypid}\n".encode("ascii"))
+            finally:
+                os.close(fd)
+            _LOCK_OWNED = True
+            atexit.register(_release_single_instance_lock)
+            return
+        except FileExistsError:
+            try:
+                parts = path.read_text(encoding="utf-8").strip().split()
+                old = int(parts[0]) if parts else -1
+            except (OSError, ValueError):
+                old = -1
+            if old > 0 and old != mypid and _process_alive(old):
+                _fail(
+                    f"Ya hay otra instancia del bot (PID {old}). "
+                    f"Cerrala o borrá el lock si es viejo: {path}"
+                )
+            try:
+                path.unlink()
+            except OSError:
+                time.sleep(0.08)
+        except OSError as e:
+            _fail(f"No se pudo crear lock de instancia única ({path}): {e}")
+    _fail(f"No se pudo adquirir lock tras reintentos: {path}")
+
+
+def _validate_ia_auto_numeric_env() -> None:
+    """Evita crash por .env / JSON mal formados en rutas numéricas críticas."""
+
+    def _need_float(key: str, default: str, *, positive: bool = False, min_v: float | None = None) -> None:
+        raw = os.environ.get(key, default).strip() or default
+        try:
+            v = float(raw)
+        except ValueError:
+            _fail(f"[ENV] {key} debe ser numérico, recibí {raw!r}")
+        if positive and v <= 0:
+            _fail(f"[ENV] {key} debe ser > 0, recibí {v}")
+        if min_v is not None and v < min_v:
+            _fail(f"[ENV] {key} debe ser >= {min_v}, recibí {v}")
+
+    _need_float("RR", "2", positive=True)
+    sl_mode = os.environ.get("IA_AUTO_SL_MODE", "percent").strip().lower()
+    if sl_mode in ("atr", "atr_m5"):
+        _need_float("IA_AUTO_SL_ATR_MULT", "1.6", positive=True)
+        ap_raw = os.environ.get("IA_AUTO_ATR_PERIOD", "14").strip() or "14"
+        try:
+            ap = int(ap_raw)
+        except ValueError:
+            _fail(f"[ENV] IA_AUTO_ATR_PERIOD debe ser entero, recibí {ap_raw!r}")
+        if ap < 2:
+            _fail(f"[ENV] IA_AUTO_ATR_PERIOD debe ser >= 2, recibí {ap}")
+    else:
+        _need_float("IA_AUTO_SL_PRICE_PERCENT", "5", positive=True)
+
+    _need_float("IA_SCAN_INTERVAL_S", "30", positive=True)
+    _need_float("IA_AUTO_COOLDOWN_S", "900", min_v=0.0)
+    _need_float("IA_AUTO_BURST_DELAY_S", "3", min_v=0.0)
+
+    dev_raw = os.environ.get("DEVIATION", os.environ.get("IA_AUTO_DEVIATION", "20")).strip() or "20"
+    try:
+        dev = int(dev_raw)
+    except ValueError:
+        _fail(f"[ENV] DEVIATION / IA_AUTO_DEVIATION debe ser entero, recibí {dev_raw!r}")
+    if dev < 0:
+        _fail(f"[ENV] DEVIATION debe ser >= 0, recibí {dev}")
+
+    mx = os.environ.get("IA_AUTO_MAX_TRADES", "").strip()
+    if mx:
+        try:
+            mxi = int(mx)
+        except ValueError:
+            _fail(f"[ENV] IA_AUTO_MAX_TRADES debe ser entero >= 0, recibí {mx!r}")
+        if mxi < 0:
+            _fail(f"[ENV] IA_AUTO_MAX_TRADES debe ser >= 0, recibí {mxi}")
+
+    mc = os.environ.get("IA_MIN_CONFIDENCE", "").strip()
+    if mc:
+        try:
+            mcv = float(mc)
+        except ValueError:
+            _fail(f"[ENV] IA_MIN_CONFIDENCE debe ser numérico, recibí {mc!r}")
+        if mcv < 0 or mcv > 100:
+            _fail(f"[ENV] IA_MIN_CONFIDENCE razonable 0–100, recibí {mcv}")
+
+    spr_mb = os.environ.get("IA_AUTO_SPREAD_SAMPLE_MAX_MB", "").strip()
+    if spr_mb:
+        try:
+            smb = float(spr_mb)
+        except ValueError:
+            _fail(f"[ENV] IA_AUTO_SPREAD_SAMPLE_MAX_MB debe ser numérico, recibí {spr_mb!r}")
+        if smb < 0:
+            _fail(f"[ENV] IA_AUTO_SPREAD_SAMPLE_MAX_MB debe ser >= 0 (0 = sin límite), recibí {smb}")
 
 
 def _windows_prevent_sleep_while_running() -> None:
@@ -439,6 +634,9 @@ def _reapply_auto_relax_patches(ctx: dict) -> None:
     lv = int(ctx.get("level", 0))
     if lv <= 0:
         os.environ.pop("IA_SCAN_VOLUME_RELAX", None)
+        if os.environ.get("__IA_SCAN_SKIP_VOL_FROM_RELAX", "0") == "1":
+            os.environ.pop("IA_SCAN_SKIP_VOLUME_CONFIRM", None)
+            os.environ.pop("__IA_SCAN_SKIP_VOL_FROM_RELAX", None)
         os.environ["IA_REGIME_BLOCK_HIGH_VOL"] = str(ctx.get("block_hv_base", "1"))
         os.environ["IA_M15_MOMENTUM_MIN_BODY_RATIO"] = str(ctx.get("mom_br_base", "0.45"))
         return
@@ -456,6 +654,8 @@ def _reapply_auto_relax_patches(ctx: dict) -> None:
         os.environ["IA_MIN_CONFIDENCE"] = str(max(55, mc0 - 3))
         os.environ["IA_REGIME_ATR_CRISIS_PCTL"] = str(min(99, cp0 + 3))
         os.environ["IA_SCAN_VOLUME_RELAX"] = "1"
+        os.environ["IA_SCAN_SKIP_VOLUME_CONFIRM"] = "1"
+        os.environ["__IA_SCAN_SKIP_VOL_FROM_RELAX"] = "1"
     if lv >= 2:
         relaxed_mom = (
             os.environ.get("IA_AUTO_RELAX_MOMENTUM_BODY", "").strip() or "0.35"
@@ -472,6 +672,24 @@ def _reapply_auto_relax_patches(ctx: dict) -> None:
         os.environ["IA_REGIME_BLOCK_HIGH_VOL"] = "0"
     else:
         os.environ["IA_REGIME_BLOCK_HIGH_VOL"] = str(ctx.get("block_hv_base", "1"))
+
+
+def _apply_demo_relaxed_signals() -> None:
+    """
+    Demo: aumenta probabilidad de entradas (menos filtros en el gatillo M15).
+    Activar IA_BOT_RELAX_SIGNALS=1 en .env (no cambia sizing ni riesgo del bot).
+    """
+    if os.environ.get("IA_BOT_RELAX_SIGNALS", "0").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return
+    os.environ["IA_SCAN_SKIP_VOLUME_CONFIRM"] = "1"
+    os.environ["IA_SCAN_SOFT_TRIGGER"] = "1"
+    os.environ["IA_SCAN_SKIP_BREAKOUT"] = "1"
+    os.environ["IA_H4_EMA_ALIGN_ENABLE"] = "0"
+    os.environ["IA_M15_MOMENTUM_ENABLE"] = "0"
 
 
 def _risk_percent_per_trade() -> float | None:
@@ -828,6 +1046,12 @@ def enviar_orden(
         except Exception:
             pass
         if not _spread_dynamic_allows_trade(simbolo, int(time.time()), float(sp_pts)):
+            print(
+                f"{simbolo}: spread dinámico bloquea entrada "
+                f"(actual ~{sp_pts:.1f} pts vs histórico). "
+                f"IA_AUTO_SPREAD_DYNAMIC=0 para desactivar.",
+                file=sys.stderr,
+            )
             return False
 
     price = ask if buy else bid
@@ -836,7 +1060,11 @@ def enviar_orden(
     stops_level = int(getattr(info, "trade_stops_level", 0) or 0)
     min_dist = float(stops_level) * point if stops_level > 0 and point > 0 else 0.0
 
-    rr = float(os.environ.get("RR", "2"))
+    try:
+        rr = float(os.environ.get("RR", "2").strip() or "2")
+    except ValueError:
+        rr = 2.0
+    rr = max(1e-9, rr)
     tp_mode = os.environ.get("IA_AUTO_TP_MODE", "").strip().lower()
     use_trailing_tp = tp_mode in ("trailing_atr", "trail", "trailing")
 
@@ -855,7 +1083,7 @@ def enviar_orden(
             atr_mult = float(os.environ.get("IA_AUTO_SL_ATR_MULT", "1.6").strip() or "1.6")
         except ValueError:
             atr_mult = 1.6
-        m5 = mt5.copy_rates_from_pos(simbolo, mt5.TIMEFRAME_M5, 0, 400)
+        m5 = mt5_copy_rates_from_pos_cached(simbolo, mt5.TIMEFRAME_M5, 0, 400)
         if m5 is None or len(m5) < atr_period + 10:
             return False
         highs0 = [float(r["high"]) for r in m5]
@@ -868,7 +1096,11 @@ def enviar_orden(
         atr = float(ser[-1])
         sl_dist = max(atr * atr_mult, min_dist)
     else:
-        sl_pct = float(os.environ.get("IA_AUTO_SL_PRICE_PERCENT", "5")) / 100.0
+        try:
+            sl_pct = float(os.environ.get("IA_AUTO_SL_PRICE_PERCENT", "5").strip() or "5") / 100.0
+        except ValueError:
+            sl_pct = 0.05
+        sl_pct = max(1e-12, min(sl_pct, 0.99))
         sl_dist = max(price * sl_pct, min_dist)
     tp_dist = sl_dist * rr
     if buy:
@@ -948,6 +1180,23 @@ def enviar_orden(
         retcode = int(getattr(result, "retcode", -1))
         if getattr(result, "deal", 0) or getattr(result, "order", 0):
             side = "COMPRA" if buy else "VENTA"
+            px_exec = getattr(result, "price", None)
+            if px_exec is not None:
+                try:
+                    px_exec = float(px_exec)
+                except (TypeError, ValueError):
+                    px_exec = None
+            log_execution_quality(
+                symbol=simbolo,
+                side=side,
+                price_requested=float(price),
+                price_executed=px_exec,
+                spread_points=float(sp_pts) if sp_pts is not None else None,
+                retcode=retcode,
+                volume=float(vol),
+                deal=int(getattr(result, "deal", 0) or 0),
+                symbol_point=float(point) if point and point > 0 else None,
+            )
             print(f"Orden enviada: {simbolo} {side} vol={vol} SL={sl:.5f} TP={tp:.5f}")
             _notify_trade_telegram(
                 simbolo,
@@ -989,6 +1238,10 @@ def main() -> None:
         _fail(
             "Definí IA_AUTO_ENABLE=1 en .env para confirmar que querés auto-trading en esta cuenta."
         )
+
+    validate_scan_session_env()
+    _validate_ia_auto_numeric_env()
+    _acquire_single_instance_lock()
 
     os.environ.setdefault("IA_SCAN_QUIET", "1")
 
@@ -1137,6 +1390,7 @@ def main() -> None:
             elapsed_relax = _elapsed_hours_since_session_open_ny()
             _maybe_advance_auto_relax(elapsed_relax, trades_sent_session, relax_ctx)
             _reapply_auto_relax_patches(relax_ctx)
+            _apply_demo_relaxed_signals()
 
             aplicar_escucha_boton_panico_ia()
 

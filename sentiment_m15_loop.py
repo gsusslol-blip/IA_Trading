@@ -22,6 +22,7 @@ import pandas as pd
 from ia_auto_trade_loop import _demo_only_or_exit, enviar_orden
 from local_env import load_env_file
 from m15_ma_scan import _resolve_scan_symbol
+from mt5_price_engine import get_price_engine
 from mt5_prices import _position_side_for_bot
 from sentiment_news import analizar_sentimiento_basico
 
@@ -85,11 +86,10 @@ def loop_principal() -> None:
 
                 sentimiento = analizar_sentimiento_basico(s)
 
-                rates = mt5.copy_rates_from_pos(s, mt5.TIMEFRAME_M15, 0, 3)
-                if rates is None or len(rates) < 3:
+                df = get_price_engine().get_data(s, mt5.TIMEFRAME_M15, 4)
+                if df is None or df.empty or len(df) < 4:
                     continue
-                df = pd.DataFrame(rates)
-                v_ant, v_act = df.iloc[-2], df.iloc[-1]
+                v_ant, v_act = df.iloc[-3], df.iloc[-2]
 
                 vol_ok = int(v_act["tick_volume"]) > int(v_ant["tick_volume"])
                 compra = (float(v_act["close"]) > float(v_ant["open"])) and sentimiento == "ALCISTA"

@@ -45,9 +45,13 @@ class TestImports(unittest.TestCase):
             "telegram_utils",
             "signal_analysis",
             "mt5_prices",
+            "ia_replay",
             "m15_ma_scan",
             "m15_engulfing_scan",
             "ia_scanner_loop",
+            "ia_backtester",
+            "ia_fast_backtest",
+            "ia_report_performance",
             "ia_auto_trade_loop",
             "ia_news_alert_loop",
             "evening_signal",
@@ -101,6 +105,14 @@ class TestPureHelpers(unittest.TestCase):
         finally:
             os.environ.clear()
             os.environ.update(old)
+
+    def test_process_alive_current_pid(self) -> None:
+        from ia_auto_trade_loop import _process_alive
+
+        import os as _os
+
+        self.assertTrue(_process_alive(_os.getpid()))
+        self.assertFalse(_process_alive(9_876_543_210))
 
 
 if __name__ == "__main__":

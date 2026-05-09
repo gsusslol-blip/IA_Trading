@@ -8,11 +8,62 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+def _bar(time: int) -> dict:
+    return {
+        "time": time,
+        "open": 1.0,
+        "high": 1.0,
+        "low": 1.0,
+        "close": 1.0,
+        "tick_volume": 1,
+        "spread": 0,
+        "real_volume": 0,
+    }
+
+
 def _ensure_project_root() -> None:
     root = Path(__file__).resolve().parent.parent
     s = str(root)
     if s not in sys.path:
         sys.path.insert(0, s)
+
+
+class TestRatesCache(unittest.TestCase):
+    def setUp(self) -> None:
+        _ensure_project_root()
+
+    def test_mt5_rates_cache_second_hit_only_polls_probe(self) -> None:
+        import os
+
+        import MetaTrader5 as mt5_import
+
+        import mt5_prices as mp
+
+        mp.mt5_rates_cache_clear()
+        old = dict(os.environ)
+        try:
+            os.environ["IA_MT5_RATES_CACHE"] = "1"
+            anchor = 424242
+            probe = [_bar(anchor)]
+            bulk = [_bar(anchor - 200), _bar(anchor - 100), _bar(anchor)]
+            counts: list[int] = []
+
+            def side(_sym, _tf, _pos, cnt):
+                c = int(cnt)
+                counts.append(c)
+                return probe[:] if c == 1 else bulk[:]
+
+            with patch.object(mp.mt5, "copy_rates_from_pos", side_effect=side):
+                r1 = mp.mt5_copy_rates_from_pos_cached("S", mt5_import.TIMEFRAME_M15, 0, 3)
+                r2 = mp.mt5_copy_rates_from_pos_cached("S", mt5_import.TIMEFRAME_M15, 0, 3)
+
+            self.assertEqual(list(r1), list(bulk))
+            self.assertIs(r2, r1)
+            self.assertEqual(counts, [1, 3, 1])
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+            mp.mt5_rates_cache_clear()
 
 
 class TestSpreadPoints(unittest.TestCase):

@@ -17,6 +17,7 @@ import MetaTrader5 as mt5
 import pandas as pd
 
 from local_env import load_env_file
+from mt5_price_engine import get_price_engine
 
 
 def _resolve_scan_symbol(requested: str) -> str | None:
@@ -35,23 +36,20 @@ def _resolve_scan_symbol(requested: str) -> str | None:
 
 
 def obtener_datos(simbolo: str, temporalidad: int, cantidad: int) -> pd.DataFrame | None:
-    velas = mt5.copy_rates_from_pos(simbolo, temporalidad, 0, cantidad)
-    if velas is None or len(velas) == 0:
-        return None
-    df = pd.DataFrame(velas)
-    df["time"] = pd.to_datetime(df["time"], unit="s")
-    return df
+    df = get_price_engine().get_data(simbolo, temporalidad, cantidad)
+    return None if df is None or df.empty else df
 
 
 def analizar_estrategia(simbolo: str, *, fast: int = 10, slow: int = 30) -> str:
     need = max(slow + 5, 50)
     df = obtener_datos(simbolo, mt5.TIMEFRAME_M15, max(100, need))
-    if df is None or len(df) < slow:
+    if df is None or len(df) < slow + 2:
         return "Sin datos suficientes"
 
-    ma_rapida = df["close"].rolling(window=fast).mean().iloc[-1]
-    ma_lenta = df["close"].rolling(window=slow).mean().iloc[-1]
-    precio_actual = float(df["close"].iloc[-1])
+    # Referencia en vela cerrada (evita repintado sobre la barra en formación).
+    ma_rapida = df["close"].rolling(window=fast).mean().iloc[-2]
+    ma_lenta = df["close"].rolling(window=slow).mean().iloc[-2]
+    precio_actual = float(df["close"].iloc[-2])
 
     if pd.isna(ma_rapida) or pd.isna(ma_lenta):
         return "Indicadores sin valor (pocas velas)"

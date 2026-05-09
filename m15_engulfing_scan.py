@@ -18,16 +18,16 @@ import pandas as pd
 
 from local_env import load_env_file
 from m15_ma_scan import _resolve_scan_symbol
+from mt5_price_engine import get_price_engine
 
 
 def obtener_analisis_pro(simbolo: str, *, verbose: bool = True) -> str:
-    velas = mt5.copy_rates_from_pos(simbolo, mt5.TIMEFRAME_M15, 0, 3)
-    if velas is None or len(velas) < 3:
+    # Última vela cerrada = iloc[-2] (la [-1] sigue en formación en live)
+    df = get_price_engine().get_data(simbolo, mt5.TIMEFRAME_M15, 4)
+    if df is None or df.empty or len(df) < 4:
         return "Sin datos"
-
-    df = pd.DataFrame(velas)
-    v_ant = df.iloc[1]
-    v_act = df.iloc[2]
+    v_ant = df.iloc[-3]
+    v_act = df.iloc[-2]
 
     volumen_confirmado = int(v_act["tick_volume"]) > int(v_ant["tick_volume"])
 
@@ -55,13 +55,12 @@ def analizar_con_filtro_h4(simbolo: str, resultado_m15: str | None = None) -> st
     Filtro de mayor plazo: precio vs SMA(20) en H4.
     Solo eleva a alta probabilidad si M15 y H4 coinciden en dirección.
     """
-    velas_h4 = mt5.copy_rates_from_pos(simbolo, mt5.TIMEFRAME_H4, 0, 60)
-    if velas_h4 is None or len(velas_h4) < 20:
+    df_h4 = get_price_engine().get_data(simbolo, mt5.TIMEFRAME_H4, 60)
+    if df_h4 is None or df_h4.empty or len(df_h4) < 20:
         return "Sin datos H4"
-
-    df_h4 = pd.DataFrame(velas_h4)
-    sma_20_h4 = df_h4["close"].rolling(window=20).mean().iloc[-1]
-    precio_h4 = float(df_h4["close"].iloc[-1])
+    df_h4c = df_h4.iloc[:-1] if len(df_h4) >= 21 else df_h4
+    sma_20_h4 = df_h4c["close"].rolling(window=20).mean().iloc[-1]
+    precio_h4 = float(df_h4c["close"].iloc[-1])
     if pd.isna(sma_20_h4):
         return "Sin datos H4"
 

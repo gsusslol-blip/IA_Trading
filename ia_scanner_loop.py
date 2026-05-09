@@ -10,11 +10,19 @@ Variables .env (opcionales):
   IA_SCAN_INTERVAL_S  — segundos entre rondas (default 30)
   IA_SCAN_HOUR_START  — hora local inicio ventana (default 9)
   IA_SCAN_HOUR_END    — hora local fin (default 18)
+    Si START > END (ej. 22 y 6), la ventana cruza medianoche (22:00–06:59 hora local).
   IA_LIQUIDITY_SESSION_NY_ENABLE — si 1, solo señales dentro de IA_LIQUIDITY_NY_HOUR_* hora NY
   IA_PRO_SESSION_TZ   — en ia_auto_expert, hora de sesión en zoneinfo (ej. America/New_York)
   IA_SCAN_QUIET       — si 1, solo imprime alertas confirmadas + fuera de horario ocasional
   IA_SLOPE_FILTER     — default 1; pendiente SMA H1 vs IA_SLOPE_MIN_ABS_PCT (régimen tendencia)
-  IA_SCAN_VOLUME_RELAX — si 1, volumen M15 >= vela anterior (en vez de >); lo puede activar ia_auto_trade_loop (auto-relax).
+  IA_SCAN_VOLUME_RELAX — si 1, volumen M15 >= vela anterior (en vez de >); auto-relax o manual.
+  IA_SCAN_SKIP_VOLUME_CONFIRM — si 1, ignora volumen tras engulfing+H4 (más trades en demo; más ruido).
+  IA_SCAN_VOL_ROLL_BARS — si >0, filtro extra: tick_volume del gatillo vs media móvil en esa vela (requiere vol > media * IA_SCAN_VOL_FACTOR).
+  IA_SCAN_SOFT_TRIGGER — si 1, vela impulsiva M15 (close vs open y vs vela anterior) en vez de engulfing estricto.
+  IA_SCAN_SKIP_BREAKOUT — si 1, no exige ruptura del rango IA_BREAKOUT_LOOKBACK.
+  IA_MT5_RATES_CACHE — si 1, caché de rates: sonda 1 vela y reutiliza bloque si no cambió la barra actual (mt5_prices + ``mt5_price_engine``).
+  IA_SCAN_CLOSED_BAR_ONLY — default 1; si 0, señal sobre vela en formación (legacy; ver IA_SCAN_SIGNAL_ON_FORMING_BAR).
+  IA_SCAN_SIGNAL_ON_FORMING_BAR — si 1, live usa iloc[-1]/[-2]; por defecto 0 → gatillo en vela cerrada (-2/-3).
   IA_SCAN_DEBUG_FILTERS — si 1, imprime motivo de cada descarte (ver log_filtro_descarte).
   IA_DXY_SCORE_ENABLE — mezcla DXY en el score final (ver signal_analysis.get_dxy_modifier).
   IA_MACRO_SCORE_SESSION_ENABLE / IA_MACRO_SCORE_SESSION_PENALTY — penalizar score fuera NY.
@@ -31,14 +39,19 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import MetaTrader5 as mt5
 import pandas as pd
 
 from local_env import apply_optuna_overrides as _apply_optuna_overrides, load_env_file
-from market_regime import regime_gate_should_skip
+from ia_replay import IAReplaySnapshot, dataframe_for_regime, replay_from_m15_h4_windows
+from market_regime import regime_gate_should_skip, regime_gate_should_skip_from_hlc
 from m15_ma_scan import _resolve_scan_symbol
+from mt5_price_engine import PriceEngine, get_price_engine
+from mt5_prices import get_rates_optimized, mt5_copy_rates_from_pos_cached
 from signal_analysis import (
+    MarketPackRatesReplay,
     analyze_market_pack,
     aplicar_score_macro,
     get_dxy_modifier,
@@ -47,6 +60,73 @@ from signal_analysis import (
 
 TF_OPERATIVA = mt5.TIMEFRAME_M15
 TF_MAYOR = mt5.TIMEFRAME_H4
+
+
+def _resolve_ia_engine(engine: PriceEngine | None) -> PriceEngine:
+    return engine if engine is not None else get_price_engine()
+
+
+def _df_from_engine(pe: PriceEngine, symbol: str, tf: int, n: int) -> pd.DataFrame | None:
+    df = pe.get_data(symbol, tf, n)
+    return None if df is None or df.empty else df
+
+
+def _scan_cfg_int(
+    cfg: dict[str, Any] | None,
+    cfg_key: str,
+    env_key: str,
+    *,
+    default: int,
+    lo: int,
+    hi: int,
+) -> int:
+    if cfg:
+        raw_c = cfg.get(cfg_key)
+        if raw_c is not None and str(raw_c).strip() != "":
+            try:
+                return max(lo, min(hi, int(raw_c)))
+            except (TypeError, ValueError):
+                pass
+    try:
+        v = int(os.environ.get(env_key, str(default)).strip() or str(default))
+    except ValueError:
+        v = default
+    return max(lo, min(hi, v))
+
+
+def _scan_cfg_float(
+    cfg: dict[str, Any] | None,
+    cfg_key: str,
+    env_key: str,
+    *,
+    default: float,
+    lo: float,
+    hi: float,
+) -> float:
+    if cfg:
+        raw_c = cfg.get(cfg_key)
+        if raw_c is not None and str(raw_c).strip() != "":
+            try:
+                return max(lo, min(hi, float(raw_c)))
+            except (TypeError, ValueError):
+                pass
+    try:
+        v = float(os.environ.get(env_key, str(default)).strip() or str(default))
+    except ValueError:
+        v = default
+    return max(lo, min(hi, v))
+
+
+def _trigger_prev_ilocs(is_replay_snap: bool, use_closed_live: bool) -> tuple[int, int]:
+    """
+    Índices **negativos** en df_m15: vela del gatillo y la previa.
+    ``iloc[-1]`` es la barra actual (replay / forming); live robusto usa ``-2/-3``.
+    """
+    if is_replay_snap:
+        return -1, -2
+    if use_closed_live:
+        return -2, -3
+    return -1, -2
 
 
 def _filtros_debug_activos() -> bool:
@@ -141,17 +221,40 @@ def iniciar_mt5() -> bool:
 
 
 def obtener_datos(simbolo: str, tf: int, cantidad: int) -> pd.DataFrame | None:
-    velas = mt5.copy_rates_from_pos(simbolo, tf, 0, cantidad)
-    if velas is None or len(velas) == 0:
-        return None
-    return pd.DataFrame(velas)
+    df = get_price_engine().get_data(simbolo, tf, cantidad)
+    return None if df is None or df.empty else df
+
+
+def validate_scan_session_env() -> None:
+    """
+    Valida IA_SCAN_HOUR_START / IA_SCAN_HOUR_END (enteros 0–23).
+    Usar tras cargar .env / Optuna en procesos que escanean.
+    """
+    for key, default in (("IA_SCAN_HOUR_START", "9"), ("IA_SCAN_HOUR_END", "18")):
+        raw = os.environ.get(key, default).strip() or default
+        try:
+            h = int(raw)
+        except ValueError:
+            print(f"[ENV] {key} debe ser entero 0-23, recibí {raw!r}", file=sys.stderr)
+            raise SystemExit(1)
+        if not (0 <= h <= 23):
+            print(f"[ENV] {key} debe estar entre 0 y 23, recibí {h}", file=sys.stderr)
+            raise SystemExit(1)
 
 
 def es_horario_seguro() -> bool:
-    h_start = int(os.environ.get("IA_SCAN_HOUR_START", "9"))
-    h_end = int(os.environ.get("IA_SCAN_HOUR_END", "18"))
+    try:
+        h_start = int(os.environ.get("IA_SCAN_HOUR_START", "9").strip() or "9")
+        h_end = int(os.environ.get("IA_SCAN_HOUR_END", "18").strip() or "18")
+    except ValueError:
+        h_start, h_end = 9, 18
+    h_start = max(0, min(23, h_start))
+    h_end = max(0, min(23, h_end))
     hora = datetime.now().hour
-    return h_start <= hora <= h_end
+    if h_start <= h_end:
+        return h_start <= hora <= h_end
+    # Ventana que cruza medianoche (p. ej. 22–06 hora local)
+    return hora >= h_start or hora <= h_end
 
 
 def es_horario_operable_ny() -> bool:
@@ -341,7 +444,17 @@ def mostrar_dashboard_decision(
     print(sep)
 
 
-def analizar_ia(simbolo: str) -> str:
+def analizar_ia(
+    simbolo: str,
+    timeframe_m15: int | None = None,
+    timeframe_h4: int | None = None,
+    *,
+    replay: IAReplaySnapshot | None = None,
+    df_m15_override: pd.DataFrame | None = None,
+    df_h4_override: pd.DataFrame | None = None,
+    engine: PriceEngine | None = None,
+    config: dict[str, Any] | None = None,
+) -> str:
     """
     Señal operativa:
     - Gatillo base: patrón tipo engulfing M15 + volumen + filtro H4.
@@ -351,35 +464,86 @@ def analizar_ia(simbolo: str) -> str:
     - Opcional: alineación EMA H4 (IA_H4_EMA_*); momentum vela M15 (IA_M15_MOMENTUM_*).
     - Filtro/score: `signal_analysis.analyze_market_pack` (multi‑TF + RSI + ATR).
 
-    Control por .env:
-      IA_MIN_CONFIDENCE (default 75) — umbral 18..92.
-      RSI_FILTER / ATR_FILTER (ver signal_analysis) endurecen señal.
-      IA_SCAN_DEBUG_FILTERS=1 — log de descartes (log_filtro_descarte).
-      Score maestro: tras el pack técnico se aplica IA_DXY_SCORE_* y IA_MACRO_SCORE_SESSION_*.
-      IA_SCAN_DASHBOARD=1 — muestra cuadro de decisión después del score maestro (consola UTF-8).
-    """
-    df_h4 = obtener_datos(simbolo, TF_MAYOR, 60)
-    if df_h4 is None or len(df_h4) < 20:
-        return "Error datos H4"
+    Modos datos:
+      * Live: ``PriceEngine`` → ``get_data`` (caché MT5). Si ``engine`` es None se usa la instancia global.
+      * ``replay``: instantánea multi‑TF ya alineada (backtest sin lookahead).
+      * ``df_m15_override`` / ``df_h4_override``: se arma ``replay`` vía MT5 para M5/H1 (ver ``replay_from_m15_h4_windows``).
+      * Live: por defecto gatillo en **vela cerrada** (``iloc[-2]``). ``IA_SCAN_SIGNAL_ON_FORMING_BAR=1`` o ``IA_SCAN_CLOSED_BAR_ONLY=0`` restaura usar la barra en formación.
 
-    sma_h4 = df_h4["close"].rolling(window=20).mean().iloc[-1]
-    precio_h4 = float(df_h4["close"].iloc[-1])
+    ``config`` (p. ej. desde params optimizados): opcional ``m15_context_bars``, ``breakout_lookback``,
+    ``vol_roll_bars`` (0=desactivado; >0 exige tick_volume > media móvil * ``vol_factor`` en la vela gatillo),
+    ``vol_factor`` (default 1.0; env ``IA_SCAN_VOL_FACTOR``).
+
+    Núcleo índices: ``v_trigger`` / ``v_previa`` (M15) y ``v_h4`` = última fila de ``df_h4_for_trend``.
+
+    timeframe_m15 / timeframe_h4: si None → M15/H4 estándar del módulo.
+    """
+    if replay is not None and (
+        df_m15_override is not None or df_h4_override is not None
+    ):
+        return "Error: no usar replay junto con df_m15_override / df_h4_override"
+
+    cfg: dict[str, Any] = dict(config) if config else {}
+    pe = _resolve_ia_engine(engine)
+
+    tf_m15_use = timeframe_m15 if timeframe_m15 is not None else TF_OPERATIVA
+    tf_h4_use = timeframe_h4 if timeframe_h4 is not None else TF_MAYOR
+
+    m15_need = _scan_cfg_int(
+        cfg, "m15_context_bars", "IA_M15_CONTEXT_BARS", default=120, lo=60, hi=800
+    )
+
+    replay_eff: IAReplaySnapshot | None = replay
+    if replay_eff is None and (df_m15_override is not None or df_h4_override is not None):
+        # ``replay_from_m15_h4_windows`` compara ``time`` en segundos unix; usar rates crudos aquí.
+        dm = (
+            df_m15_override
+            if df_m15_override is not None
+            else get_rates_optimized(simbolo, tf_m15_use, m15_need)
+        )
+        dh = (
+            df_h4_override
+            if df_h4_override is not None
+            else get_rates_optimized(simbolo, tf_h4_use, max(80, 60))
+        )
+        if dm is None or dh is None or len(dm) < 60 or len(dh) < 20:
+            return "Error datos M15/H4 (overrides)"
+        replay_eff = replay_from_m15_h4_windows(simbolo, dm, dh)
+        if replay_eff is None:
+            return "Error construyendo replay desde overrides"
+
+    if replay_eff is not None:
+        df_h4 = replay_eff.df_h4
+        src = replay_eff.df_m15
+        df_m15 = src.iloc[-m15_need:].copy() if len(src) > m15_need else src
+    else:
+        df_h4 = _df_from_engine(pe, simbolo, tf_h4_use, max(80, 60))
+        if df_h4 is None or len(df_h4) < 20:
+            return "Error datos H4"
+        df_m15 = _df_from_engine(pe, simbolo, tf_m15_use, m15_need)
+        if df_m15 is None or len(df_m15) < 60:
+            return "Error datos M15"
+
+    live_no_replay = replay_eff is None
+    df_h4_for_trend = df_h4.iloc[:-1].copy() if live_no_replay and len(df_h4) >= 21 else df_h4
+    v_h4 = df_h4_for_trend.iloc[-1]
+    sma_h4 = df_h4_for_trend["close"].rolling(window=20).mean().iloc[-1]
+    precio_h4 = float(v_h4["close"])
     if pd.isna(sma_h4):
         return "Error datos H4"
     sma_f = float(sma_h4)
     tendencia_h4 = "ALTA" if precio_h4 > sma_f else "BAJA"
 
-    # Más contexto para estructura/breakout
-    try:
-        m15_need = int(os.environ.get("IA_M15_CONTEXT_BARS", "120").strip() or "120")
-    except ValueError:
-        m15_need = 120
-    m15_need = max(60, min(800, m15_need))
-    df_m15 = obtener_datos(simbolo, TF_OPERATIVA, m15_need)
-    if df_m15 is None or len(df_m15) < 60:
-        return "Error datos M15"
-
-    skip_regime, regime_reason = regime_gate_should_skip(simbolo)
+    if replay_eff is None:
+        skip_regime, regime_reason = regime_gate_should_skip(simbolo)
+    else:
+        dreg = dataframe_for_regime(replay_eff)
+        if len(dreg) < 50:
+            return "Sin señal clara"
+        reg_h = [float(x) for x in dreg["high"].tolist()]
+        reg_l = [float(x) for x in dreg["low"].tolist()]
+        reg_c = [float(x) for x in dreg["close"].tolist()]
+        skip_regime, regime_reason = regime_gate_should_skip_from_hlc(reg_h, reg_l, reg_c)
     if skip_regime:
         if _filtros_debug_activos():
             log_filtro_descarte(
@@ -390,24 +554,86 @@ def analizar_ia(simbolo: str) -> str:
             )
         return "Sin señal clara"
 
-    v_ant = df_m15.iloc[-2]
-    v_act = df_m15.iloc[-1]
+    lb_bp = _scan_cfg_int(
+        cfg, "breakout_lookback", "IA_BREAKOUT_LOOKBACK", default=20, lo=10, hi=120
+    )
 
+    is_replay_snap = replay_eff is not None
+    legacy_forming = os.environ.get("IA_SCAN_CLOSED_BAR_ONLY", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+    )
+    signal_on_forming = legacy_forming or os.environ.get(
+        "IA_SCAN_SIGNAL_ON_FORMING_BAR", "0"
+    ).strip().lower() in ("1", "true", "yes")
+    use_closed_live = not signal_on_forming
+
+    i_tr, i_pr = _trigger_prev_ilocs(is_replay_snap, use_closed_live)
+    if is_replay_snap:
+        need_rows = max(60, lb_bp + 4)
+    elif use_closed_live:
+        need_rows = max(60, lb_bp + 4, 63)
+    else:
+        need_rows = max(60, lb_bp + 4)
+    if len(df_m15) < need_rows:
+        return "Error datos M15"
+
+    v_trigger = df_m15.iloc[i_tr]
+    v_previa = df_m15.iloc[i_pr]
+
+    vol_roll_bars = _scan_cfg_int(
+        cfg, "vol_roll_bars", "IA_SCAN_VOL_ROLL_BARS", default=0, lo=0, hi=250
+    )
+    vol_factor = _scan_cfg_float(
+        cfg, "vol_factor", "IA_SCAN_VOL_FACTOR", default=1.0, lo=0.01, hi=50.0
+    )
+    if vol_roll_bars > 0:
+        avg_vol_s = df_m15["tick_volume"].rolling(vol_roll_bars).mean().iloc[i_tr]
+        vt = float(v_trigger["tick_volume"])
+        if pd.isna(avg_vol_s) or vt <= float(avg_vol_s) * vol_factor:
+            if _filtros_debug_activos():
+                log_filtro_descarte(
+                    "VOLUMEN_ROLLING",
+                    f"vol={vt:.4g} avg*fac={float(avg_vol_s) * vol_factor:.4g}" if not pd.isna(avg_vol_s) else vt,
+                    f"media({vol_roll_bars}) * {vol_factor:g}",
+                    simbolo=simbolo,
+                )
+            return "Sin señal clara"
+
+    skip_vol_check = os.environ.get("IA_SCAN_SKIP_VOLUME_CONFIRM", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     vol_relax = os.environ.get("IA_SCAN_VOLUME_RELAX", "0").strip().lower() in (
         "1",
         "true",
         "yes",
     )
-    if vol_relax:
-        vol_confirmado = int(v_act["tick_volume"]) >= int(v_ant["tick_volume"])
+    if skip_vol_check:
+        vol_confirmado = True
+    elif vol_relax:
+        vol_confirmado = int(v_trigger["tick_volume"]) >= int(v_previa["tick_volume"])
     else:
-        vol_confirmado = int(v_act["tick_volume"]) > int(v_ant["tick_volume"])
-    alcista = float(v_act["close"]) > float(v_ant["open"]) and float(v_act["open"]) < float(
-        v_ant["close"]
+        vol_confirmado = int(v_trigger["tick_volume"]) > int(v_previa["tick_volume"])
+    alcista = float(v_trigger["close"]) > float(v_previa["open"]) and float(
+        v_trigger["open"]
+    ) < float(v_previa["close"])
+    bajista = float(v_trigger["close"]) < float(v_previa["open"]) and float(
+        v_trigger["open"]
+    ) > float(v_previa["close"])
+
+    soft_trig = os.environ.get("IA_SCAN_SOFT_TRIGGER", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
     )
-    bajista = float(v_act["close"]) < float(v_ant["open"]) and float(v_act["open"]) > float(
-        v_ant["close"]
-    )
+    prev_close = float(v_previa["close"])
+    cv = float(v_trigger["close"])
+    ov = float(v_trigger["open"])
+    impulse_buy = cv > ov and cv > prev_close
+    impulse_sell = cv < ov and cv < prev_close
 
     quiet = os.environ.get("IA_SCAN_QUIET", "0").strip().lower() in ("1", "true", "yes")
     if not quiet:
@@ -416,7 +642,20 @@ def analizar_ia(simbolo: str) -> str:
         )
 
     base = None
-    if alcista and vol_confirmado and tendencia_h4 == "ALTA":
+    if soft_trig:
+        if impulse_buy and vol_confirmado and tendencia_h4 == "ALTA":
+            base = "BUY"
+        elif impulse_sell and vol_confirmado and tendencia_h4 == "BAJA":
+            base = "SELL"
+        else:
+            if _filtros_debug_activos():
+                st = (
+                    f"soft impulse_buy={impulse_buy} impulse_sell={impulse_sell} "
+                    f"vol_ok={vol_confirmado} H4={tendencia_h4}"
+                )
+                log_filtro_descarte("GATILLO_SOFT_M15_H4", st, "impulso+vol+H4", simbolo=simbolo)
+            return "Sin señal clara"
+    elif alcista and vol_confirmado and tendencia_h4 == "ALTA":
         base = "BUY"
     elif bajista and vol_confirmado and tendencia_h4 == "BAJA":
         base = "SELL"
@@ -439,7 +678,7 @@ def analizar_ia(simbolo: str) -> str:
             min_dist = float(os.environ.get("IA_H4_EMA_MIN_DIST_PCT", "0").strip() or "0")
         except ValueError:
             min_dist = 0.0
-        ema_h4 = _h4_ema_last(df_h4, ema_p)
+        ema_h4 = _h4_ema_last(df_h4_for_trend, ema_p)
         if ema_h4 is None:
             if _filtros_debug_activos():
                 log_filtro_descarte("H4_EMA_DATOS", "", f"EMA{ema_p} H4", simbolo=simbolo)
@@ -468,7 +707,7 @@ def analizar_ia(simbolo: str) -> str:
         )
         ok_m, why_m = _filtro_m15_momentum_vela(
             base,
-            v_act,
+            v_trigger,
             min_body_ratio=min_br,
             close_in_third=third_on,
         )
@@ -496,16 +735,22 @@ def analizar_ia(simbolo: str) -> str:
             return "Sin señal clara"
 
     # Filtro de estructura: exigir ruptura del rango reciente en M15
-    try:
-        lb = int(os.environ.get("IA_BREAKOUT_LOOKBACK", "20").strip() or "20")
-    except ValueError:
-        lb = 20
-    lb = max(10, min(120, lb))
-    recent = df_m15.iloc[-(lb + 2) : -1]  # excluye la vela actual
-    if len(recent) >= lb:
+    skip_bo = os.environ.get("IA_SCAN_SKIP_BREAKOUT", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    lb = lb_bp
+    if is_replay_snap:
+        recent = df_m15.iloc[-(lb + 2) : -1]
+    elif use_closed_live:
+        recent = df_m15.iloc[-(lb + 3) : -2]
+    else:
+        recent = df_m15.iloc[-(lb + 2) : -1]
+    if not skip_bo and len(recent) >= lb:
         hi = float(recent["high"].max())
         lo = float(recent["low"].min())
-        close = float(v_act["close"])
+        close = float(v_trigger["close"])
         if base == "BUY" and close <= hi:
             if _filtros_debug_activos():
                 log_filtro_descarte(
@@ -527,12 +772,25 @@ def analizar_ia(simbolo: str) -> str:
 
     # Filtro de régimen (tendencia): pendiente SMA en H1 para evitar rango
     if os.environ.get("IA_SLOPE_FILTER", "1").strip().lower() not in ("0", "false", "no"):
-        h1 = mt5.copy_rates_from_pos(simbolo, mt5.TIMEFRAME_H1, 0, 120)
-        if h1 is None or len(h1) < 80:
-            if _filtros_debug_activos():
-                log_filtro_descarte("REGIMEN_H1_DATOS", len(h1) if h1 is not None else 0, ">=80 velas", simbolo=simbolo)
-            return "Sin señal clara"
-        closes = [float(r["close"]) for r in h1]
+        if replay_eff is not None:
+            h1_rows = replay_eff.df_h1
+            n_h1 = len(h1_rows)
+            if n_h1 < 80:
+                if _filtros_debug_activos():
+                    log_filtro_descarte("REGIMEN_H1_DATOS", n_h1, ">=80 velas", simbolo=simbolo)
+                return "Sin señal clara"
+            closes = [float(x) for x in h1_rows["close"].tolist()]
+        else:
+            h1 = mt5_copy_rates_from_pos_cached(simbolo, mt5.TIMEFRAME_H1, 0, 120)
+            if h1 is None or len(h1) < 80:
+                if _filtros_debug_activos():
+                    log_filtro_descarte(
+                        "REGIMEN_H1_DATOS", len(h1) if h1 is not None else 0, ">=80 velas", simbolo=simbolo
+                    )
+                return "Sin señal clara"
+            closes = [float(r["close"]) for r in h1]
+            if len(closes) >= 2:
+                closes = closes[:-1]
         period = int(os.environ.get("IA_SLOPE_SMA_PERIOD", "50"))
         look = int(os.environ.get("IA_SLOPE_LOOKBACK", "10"))
         need_bar = period + look + 2
@@ -561,15 +819,21 @@ def analizar_ia(simbolo: str) -> str:
                 log_filtro_descarte("REGIMEN_SLOPE_SIGNO", slope_pct, "pendiente < 0 para SELL", simbolo=simbolo)
             return "Sin señal clara"
 
-    tick = mt5.symbol_info_tick(simbolo)
-    if tick is None:
-        return "Error tick"
-    bid = float(getattr(tick, "bid", 0.0) or 0.0)
-    ask = float(getattr(tick, "ask", 0.0) or 0.0)
-    if bid <= 0 or ask <= 0:
-        return "Error tick"
+    if replay_eff is not None:
+        bid = float(replay_eff.bid)
+        ask = float(replay_eff.ask)
+        if bid <= 0 or ask <= 0:
+            return "Error tick"
+    else:
+        tick = mt5.symbol_info_tick(simbolo)
+        if tick is None:
+            return "Error tick"
+        bid = float(getattr(tick, "bid", 0.0) or 0.0)
+        ask = float(getattr(tick, "ask", 0.0) or 0.0)
+        if bid <= 0 or ask <= 0:
+            return "Error tick"
 
-    if _filtros_debug_activos():
+    if _filtros_debug_activos() and replay_eff is None:
         try:
             from mt5_prices import spread_points_from_tick
 
@@ -600,6 +864,16 @@ def analizar_ia(simbolo: str) -> str:
     except ValueError:
         rr = 2.0
 
+    replay_pack = (
+        MarketPackRatesReplay(
+            m5=replay_eff.df_m5,
+            m15=df_m15,
+            h1=replay_eff.df_h1,
+            h4=df_h4,
+        )
+        if replay_eff is not None
+        else None
+    )
     pack = analyze_market_pack(
         symbol=simbolo,
         signal=base,
@@ -609,6 +883,7 @@ def analizar_ia(simbolo: str) -> str:
         atr_period=int(os.environ.get("ATR_PERIOD", "14")),
         sl_atr_mult=float(os.environ.get("SL_ATR_MULT", "1.6")),
         rr=rr,
+        rates_replay=replay_pack,
     )
 
     conf_tecnica = int(pack.confidence)
@@ -749,6 +1024,7 @@ def analizar_ia(simbolo: str) -> str:
 def main() -> None:
     load_env_file()
     _apply_optuna_overrides()
+    validate_scan_session_env()
     raw = os.environ.get("IA_SCAN_SYMBOLS", "XAUUSD")
     requested_list = [a.strip() for a in raw.split(",") if a.strip()]
     interval = float(os.environ.get("IA_SCAN_INTERVAL_S", "30"))

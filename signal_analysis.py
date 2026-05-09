@@ -10,8 +10,34 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 import MetaTrader5 as mt5
+import pandas as pd
+
+from mt5_prices import mt5_copy_rates_from_pos_cached
+
+
+def _m15_rates_last_closed_close_idx(n: int) -> int:
+    """Índice del último cierre considerado cerrado (-2 si hay barra en formación)."""
+    return -2 if n >= 2 else -1
+
+
+def _rates_from_replay_or_mt5(
+    *,
+    symbol: str,
+    timeframe: int,
+    count: int,
+    replay_df: pd.DataFrame | None,
+) -> Any:
+    """
+    Lista de dicts (desde DataFrame) o ndarray de MT5; iterable con r['close'] etc.
+    """
+    if replay_df is not None:
+        if len(replay_df) == 0:
+            return None
+        return replay_df.to_dict("records")
+    return mt5_copy_rates_from_pos_cached(symbol, timeframe, 0, count)
 
 
 def _sma(closes: list[float], period: int) -> float | None:
@@ -267,6 +293,18 @@ class MarketAnalysisPack:
     passes_atr_filter: bool
 
 
+@dataclass(frozen=True)
+class MarketPackRatesReplay:
+    """
+    DataFrames alineados al instante del backtest (sin lookahead); mismas columnas que copy_rates.
+    """
+
+    m5: pd.DataFrame | None = None
+    m15: pd.DataFrame | None = None
+    h1: pd.DataFrame | None = None
+    h4: pd.DataFrame | None = None
+
+
 def analyze_market_pack(
     symbol: str,
     signal: str,
@@ -276,6 +314,8 @@ def analyze_market_pack(
     atr_period: int,
     sl_atr_mult: float,
     rr: float,
+    *,
+    rates_replay: MarketPackRatesReplay | None = None,
 ) -> MarketAnalysisPack:
     """
     Análisis completo + confianza 18–92 + texto para Telegram.
@@ -286,7 +326,13 @@ def analyze_market_pack(
     digits = int(getattr(info, "digits", 2) or 2) if info is not None else 2
     point = float(getattr(info, "point", 0.0) or 0.0) if info is not None else 0.01
 
-    m5 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 400)
+    rep = rates_replay
+    m5 = _rates_from_replay_or_mt5(
+        symbol=symbol,
+        timeframe=mt5.TIMEFRAME_M5,
+        count=400,
+        replay_df=rep.m5 if rep else None,
+    )
     if atr_m5 is None and m5 is not None and len(m5) > atr_period + 5:
         highs0 = [float(r["high"]) for r in m5]
         lows0 = [float(r["low"]) for r in m5]
@@ -302,9 +348,24 @@ def analyze_market_pack(
         closes_m5 = [float(r["close"]) for r in m5]
         rsi_val = _rsi_wilder(closes_m5, 14)
 
-    m15 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 250)
-    h1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 0, 200)
-    h4 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H4, 0, 120)
+    m15 = _rates_from_replay_or_mt5(
+        symbol=symbol,
+        timeframe=mt5.TIMEFRAME_M15,
+        count=250,
+        replay_df=rep.m15 if rep else None,
+    )
+    h1 = _rates_from_replay_or_mt5(
+        symbol=symbol,
+        timeframe=mt5.TIMEFRAME_H1,
+        count=200,
+        replay_df=rep.h1 if rep else None,
+    )
+    h4 = _rates_from_replay_or_mt5(
+        symbol=symbol,
+        timeframe=mt5.TIMEFRAME_H4,
+        count=120,
+        replay_df=rep.h4 if rep else None,
+    )
 
     lines: list[str] = []
 
@@ -432,8 +493,20 @@ def format_deep_analysis(
     atr_period: int,
     sl_atr_mult: float,
     rr: float,
+    *,
+    rates_replay: MarketPackRatesReplay | None = None,
 ) -> str:
-    return analyze_market_pack(symbol, signal, bid, ask, atr_m5, atr_period, sl_atr_mult, rr).text_block
+    return analyze_market_pack(
+        symbol,
+        signal,
+        bid,
+        ask,
+        atr_m5,
+        atr_period,
+        sl_atr_mult,
+        rr,
+        rates_replay=rates_replay,
+    ).text_block
 
 
 def telegram_confidence_threshold() -> float:
@@ -474,11 +547,12 @@ def obtener_bias_dxy(
     except ValueError:
         nb = 20
     nb = max(5, min(80, nb))
-    rates = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M15, 0, nb)
+    rates = mt5_copy_rates_from_pos_cached(sym, mt5.TIMEFRAME_M15, 0, nb)
     if rates is None or len(rates) < 5:
         return "N/D"
     c0 = float(rates["close"][0])
-    c1 = float(rates["close"][-1])
+    li = _m15_rates_last_closed_close_idx(len(rates))
+    c1 = float(rates["close"][li])
     if c0 <= 0:
         return "N/D"
     n = float(len(rates))
@@ -524,11 +598,12 @@ def get_dxy_modifier(*, signal: str, trade_symbol: str = "") -> int:
     except ValueError:
         nb = 10
     nb = max(5, min(40, nb))
-    rates = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M15, 0, nb)
+    rates = mt5_copy_rates_from_pos_cached(sym, mt5.TIMEFRAME_M15, 0, nb)
     if rates is None or len(rates) < nb:
         return 0
     c0 = float(rates["close"][0])
-    c1 = float(rates["close"][-1])
+    li = _m15_rates_last_closed_close_idx(len(rates))
+    c1 = float(rates["close"][li])
     if c0 <= 0:
         return 0
     returns = (c1 - c0) / c0

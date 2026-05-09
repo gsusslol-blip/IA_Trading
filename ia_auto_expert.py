@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
 
+from mt5_prices import mt5_copy_rates_from_pos_cached
+
 from signal_analysis import _atr_series, _true_ranges
 from mt5_prices import BOT_MAGIC
 
@@ -52,7 +54,7 @@ def _dxy_slope_pct_m15(symbol: str) -> float | None:
     except ValueError:
         nbar = 64
     nbar = max(30, min(200, nbar))
-    r = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, nbar)
+    r = mt5_copy_rates_from_pos_cached(symbol, mt5.TIMEFRAME_M15, 0, nbar)
     if r is None or len(r) < 30:
         return None
     closes = [float(x["close"]) for x in r]
@@ -157,7 +159,7 @@ def _current_favorable_move(position, bid: float, ask: float) -> float:
 
 
 def _atr_last(symbol: str, tf: int, period: int, bars: int = 120) -> float | None:
-    r = mt5.copy_rates_from_pos(symbol, tf, 0, bars)
+    r = mt5_copy_rates_from_pos_cached(symbol, tf, 0, bars)
     if r is None or len(r) < period + 5:
         return None
     highs = [float(x["high"]) for x in r]

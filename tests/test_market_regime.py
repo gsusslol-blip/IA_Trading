@@ -54,6 +54,14 @@ class TestRegimeRulesNoMt5(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(snap.source, "off")
 
+    def test_gate_from_hlc_respects_disabled(self) -> None:
+        from market_regime import regime_gate_should_skip_from_hlc
+
+        os.environ["IA_REGIME_ENABLE"] = "0"
+        skip, msg = regime_gate_should_skip_from_hlc([100.0, 101.0], [99.0, 100.0], [99.5, 100.5])
+        self.assertFalse(skip)
+        self.assertEqual(msg, "")
+
 
 if __name__ == "__main__":
     unittest.main()
