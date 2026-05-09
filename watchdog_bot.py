@@ -17,6 +17,7 @@ Config (opcional .env):
 
 Uso manual:
   python watchdog_bot.py
+  python watchdog_bot.py --stop   (termina todos los ia_auto_trade_loop.py que el watchdog suele arrancar)
 """
 
 from __future__ import annotations
@@ -90,30 +91,23 @@ def _python_cmd() -> str:
     return sys.executable
 
 
-def _is_bot_running() -> tuple[bool, int | None]:
+def _find_ia_auto_bot_pids() -> list[int]:
     """
-    Returns (running, pid).
-    Best-effort: uses tasklist and command line via CIM.
+    PIDs de python.exe cuya línea de comandos incluye ia_auto_trade_loop.py
+    (los que suele levantar este watchdog).
     """
+    pids: list[int] = []
     try:
-        import win32com.client  # type: ignore
-
-        # If pywin32 exists, great; but we don't depend on it.
-        del win32com.client
-    except Exception:
-        pass
-    try:
-        # Works without extra deps.
         import wmi  # type: ignore
 
         c = wmi.WMI()
         for p in c.Win32_Process(name="python.exe"):
             cmd = str(getattr(p, "CommandLine", "") or "")
             if "ia_auto_trade_loop.py" in cmd:
-                return True, int(getattr(p, "ProcessId", 0) or 0) or None
-        return False, None
+                pid = int(getattr(p, "ProcessId", 0) or 0)
+                if pid > 0:
+                    pids.append(pid)
     except Exception:
-        # Fallback: use CIM via powershell
         try:
             ps = [
                 "powershell",
@@ -121,14 +115,73 @@ def _is_bot_running() -> tuple[bool, int | None]:
                 "-Command",
                 "Get-CimInstance Win32_Process -Filter \"name='python.exe'\" | "
                 "Where-Object { $_.CommandLine -match 'ia_auto_trade_loop\\.py' } | "
-                "Select-Object -First 1 -ExpandProperty ProcessId",
+                "Select-Object -ExpandProperty ProcessId",
             ]
             out = subprocess.check_output(ps, stderr=subprocess.DEVNULL, text=True).strip()
-            if out:
-                return True, int(out)
+            for line in out.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    pids.append(int(line))
         except Exception:
             pass
+    # únicos, ordenados
+    return sorted(set(pids))
+
+
+def _is_bot_running() -> tuple[bool, int | None]:
+    """
+    Returns (running, pid).
+    Best-effort: uses WMI or CIM via PowerShell.
+    """
+    try:
+        import win32com.client  # type: ignore
+
+        del win32com.client
+    except Exception:
+        pass
+    pids = _find_ia_auto_bot_pids()
+    if not pids:
         return False, None
+    return True, pids[0]
+
+
+def _kill_pid_windows(pid: int) -> bool:
+    try:
+        r = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def stop_all_watchdog_spawned_bots() -> tuple[int, int]:
+    """
+    Termina todos los procesos ia_auto_trade_loop.py detectados.
+    Returns (killed_count, failed_count).
+    """
+    pids = _find_ia_auto_bot_pids()
+    ok = 0
+    bad = 0
+    for pid in pids:
+        if _kill_pid_windows(pid):
+            ok += 1
+            _append_log(f"{_now()} [STOP] taskkill ok pid={pid}")
+        else:
+            bad += 1
+            _append_log(f"{_now()} [STOP] taskkill fail pid={pid}")
+    if pids:
+        _notify(
+            f"🛑 <b>IA_WATCHDOG</b>: stop manual — terminados <code>{ok}</code>, "
+            f"fallidos <code>{bad}</code>."
+        )
+    else:
+        _append_log(f"{_now()} [STOP] no hay procesos ia_auto_trade_loop.py")
+    return ok, bad
 
 
 def _check_mt5() -> bool:
@@ -195,6 +248,10 @@ def _start_bot() -> bool:
 
 def main() -> int:
     _load_env()
+    if len(sys.argv) > 1 and sys.argv[1].strip().lower() in ("--stop", "-stop", "stop"):
+        stop_all_watchdog_spawned_bots()
+        return 0
+
     if not _env_on("IA_WATCHDOG_ENABLE", "0"):
         return 0
 
