@@ -7,7 +7,7 @@ Objetivo:
   - Chequear conectividad MT5 (initialize) y notificar si falla.
 
 Config (opcional .env):
-  IA_WATCHDOG_ENABLE=1                 (default 1)
+  IA_WATCHDOG_ENABLE=0                 (default 0; poné 1 para reactivar)
   IA_WATCHDOG_LOG=watchdog.log         (default watchdog.log)
   IA_WATCHDOG_BOT_LOG=ia_auto_trade_loop_runtime.log  (stdout/err del bot)
   IA_WATCHDOG_PYTHON=...               (ruta explícita a python.exe; si vacío usa sys.executable)
@@ -195,7 +195,7 @@ def _start_bot() -> bool:
 
 def main() -> int:
     _load_env()
-    if not _env_on("IA_WATCHDOG_ENABLE", "1"):
+    if not _env_on("IA_WATCHDOG_ENABLE", "0"):
         return 0
 
     running, pid = _is_bot_running()
