@@ -18,6 +18,57 @@ from signal_analysis import _atr_series, _true_ranges
 from mt5_prices import BOT_MAGIC
 
 
+_LAST_M15_MANAGED_CLOSE_TS: dict[str, int] = {}
+
+
+def _m15_last_closed_trigger(symbol: str, *, atr_period: int, bars: int | None = None) -> dict | None:
+    """
+    Devuelve snapshot de la **última vela M15 cerrada** para gestión (cero decisiones intra-vela):
+    ``{"time": int, "close": float, "atr": float|None}``.
+    """
+    try:
+        per = int(atr_period)
+    except (TypeError, ValueError):
+        per = 14
+    per = max(2, min(200, per))
+
+    if bars is None:
+        bars = max(120, per + 20)
+    bars = max(50, min(500, int(bars)))
+
+    r = mt5_copy_rates_from_pos_cached(symbol, mt5.TIMEFRAME_M15, 0, bars)
+    if r is None or len(r) < max(per + 5, 10):
+        return None
+
+    n = len(r)
+    idx = -2 if n >= 2 else -1  # última vela cerrada
+    try:
+        t = int(r[idx]["time"])
+        close = float(r[idx]["close"])
+    except Exception:
+        return None
+    if close <= 0:
+        return None
+
+    # ATR basado en TR de velas cerradas (usa close de la vela cerrada idx=-2).
+    atr_val: float | None = None
+    try:
+        highs = [float(x["high"]) for x in r]
+        lows = [float(x["low"]) for x in r]
+        closes = [float(x["close"]) for x in r]
+        trs = _true_ranges(highs, lows, closes)  # len = n-1; TR[j] corresponde a vela i=j+1
+        atr_s = _atr_series(trs, per)
+        # ATR[k] corresponde a vela i = k + per (índice en closes)
+        i = (n + idx)  # idx -2 -> i=n-2
+        k = i - per
+        if 0 <= k < len(atr_s):
+            atr_val = float(atr_s[k])
+    except Exception:
+        atr_val = None
+
+    return {"time": t, "close": close, "atr": atr_val}
+
+
 def pro_session_allows_order() -> bool:
     """
     Ventana de liquidez para nuevas órdenes si IA_PRO_SESSION_ENABLE=1.
@@ -175,28 +226,23 @@ def _atr_last(symbol: str, tf: int, period: int, bars: int = 120) -> float | Non
 def manage_position_expert(
     position,
     *,
-    atr_period: int,
     trail_mult: float,
     be_trigger_rr: float,
     be_buffer_pts: float,
     trailing_mode: bool,
+    trigger: dict,
 ) -> bool:
     """
     Breakeven al alcanzar be_trigger_rr * R; trailing ATR si trailing_mode.
     Devuelve True si se envio modificacion (para logging eventual).
     """
     sym = str(getattr(position, "symbol", "") or "")
-    tick = mt5.symbol_info_tick(sym)
-    if tick is None:
-        return False
     info = mt5.symbol_info(sym)
     if info is None:
         return False
-    bid = float(getattr(tick, "bid", 0.0) or 0.0)
-    ask = float(getattr(tick, "ask", 0.0) or 0.0)
     point = float(getattr(info, "point", 0.0) or 0.0)
     digits = int(getattr(info, "digits", 5) or 5)
-    if bid <= 0 or ask <= 0 or point <= 0:
+    if point <= 0:
         return False
 
     risk = _initial_risk_price(position)
@@ -210,7 +256,20 @@ def manage_position_expert(
     cur_tp = float(getattr(position, "tp", 0.0) or 0.0)
     op = float(getattr(position, "price_open", 0.0) or 0.0)
 
-    fav = _current_favorable_move(position, bid, ask)
+    try:
+        close_px = float(trigger.get("close", 0.0) or 0.0)
+    except Exception:
+        close_px = 0.0
+    if close_px <= 0:
+        return False
+
+    # Favorable move estimado al cierre de M15 (sin ruido intra-vela).
+    if typ == mt5.POSITION_TYPE_BUY:
+        fav = max(0.0, close_px - op)
+    elif typ == mt5.POSITION_TYPE_SELL:
+        fav = max(0.0, op - close_px)
+    else:
+        fav = 0.0
     buf = be_buffer_pts * point
 
     new_sl = cur_sl
@@ -232,17 +291,20 @@ def manage_position_expert(
 
     # 2) Trailing ATR (TP virtual; solo sube/baja SL a favor)
     if trailing_mode:
-        atr = _atr_last(sym, mt5.TIMEFRAME_M5, atr_period)
+        try:
+            atr = float(trigger.get("atr")) if trigger.get("atr") is not None else None
+        except Exception:
+            atr = None
         if atr and atr > 0:
             dist = atr * trail_mult
             if typ == mt5.POSITION_TYPE_BUY:
-                trail = bid - dist
+                trail = close_px - dist
                 trail = max(trail, op + buf * 0.5)
                 if trail > cur_sl + point * 0.5:
                     new_sl = max(new_sl, trail)
                     changed = True
             elif typ == mt5.POSITION_TYPE_SELL:
-                trail = ask + dist
+                trail = close_px + dist
                 if cur_sl == 0 or trail < cur_sl - point * 0.5:
                     new_sl = min(cur_sl if cur_sl > 0 else 1e12, trail)
                     changed = True
@@ -274,7 +336,7 @@ def gestionar_posiciones_activas(symbols: list[str]) -> None:
 
 
 def manage_all_bot_positions_expert(symbols: list[str]) -> None:
-    """Recorre posiciones BOT_MAGIC en symbols y aplica BE/trailing."""
+    """Recorre posiciones BOT_MAGIC en symbols y aplica BE/trailing **solo en cierre M15**."""
     be_on = os.environ.get("IA_BE_ENABLE", "0").strip().lower() in ("1", "true", "yes")
     if not be_on and not _tp_mode_trailing():
         return
@@ -300,19 +362,36 @@ def manage_all_bot_positions_expert(symbols: list[str]) -> None:
     if not pos_list:
         return
     sym_set = set(symbols)
+    # Agrupar por símbolo para calcular trigger una sola vez por M15 cerrado.
+    by_sym: dict[str, list] = {}
     for p in pos_list:
         if int(getattr(p, "magic", -1) or -1) != BOT_MAGIC:
             continue
-        if str(getattr(p, "symbol", "")) not in sym_set:
+        s = str(getattr(p, "symbol", "") or "")
+        if not s or s not in sym_set:
             continue
-        manage_position_expert(
-            p,
-            atr_period=atr_period,
-            trail_mult=trail_mult,
-            be_trigger_rr=be_rr,
-            be_buffer_pts=be_buf,
-            trailing_mode=trail,
-        )
+        by_sym.setdefault(s, []).append(p)
+
+    for sym, positions in by_sym.items():
+        trig = _m15_last_closed_trigger(sym, atr_period=atr_period)
+        if trig is None:
+            continue
+        ts = int(trig.get("time", 0) or 0)
+        if ts <= 0:
+            continue
+        if _LAST_M15_MANAGED_CLOSE_TS.get(sym) == ts:
+            continue  # ya se gestionó este cierre
+        _LAST_M15_MANAGED_CLOSE_TS[sym] = ts
+
+        for p in positions:
+            manage_position_expert(
+                p,
+                trail_mult=trail_mult,
+                be_trigger_rr=be_rr,
+                be_buffer_pts=be_buf,
+                trailing_mode=trail,
+                trigger=trig,
+            )
 
 
 def _tp_mode_trailing() -> bool:

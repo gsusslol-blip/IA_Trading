@@ -166,7 +166,19 @@ def _load_env_override(path: Path) -> list[str]:
 
 def _apply_json_to_environ(data: dict[str, Any]) -> list[str]:
     """Aplica un dict JSON a os.environ; respeta anidado `params` o formato plano (params_optimized)."""
+    flat = _flatten_optuna_json_payload(data)
     applied: list[str] = []
+    for k, v in flat.items():
+        os.environ[k] = _env_str(v)
+        applied.append(k)
+    return applied
+
+
+def _flatten_optuna_json_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Extrae parámetros tuneables desde params_optimized / ia_optuna_best (respeta IA_OPTUNA_EXCLUDE_KEYS).
+    Sin efectos sobre os.environ.
+    """
     exclude_raw = os.environ.get("IA_OPTUNA_EXCLUDE_KEYS", "").strip()
     exclude = {k.strip() for k in exclude_raw.split(",") if k.strip()} if exclude_raw else set()
     if isinstance(data, dict) and "params" in data and isinstance(data["params"], dict):
@@ -174,16 +186,66 @@ def _apply_json_to_environ(data: dict[str, Any]) -> list[str]:
     else:
         raw = {k: v for k, v in data.items() if str(k) not in _JSON_META_KEYS_ENV}
     if not isinstance(raw, dict):
-        return applied
+        return {}
+    out: dict[str, Any] = {}
     for k, v in raw.items():
         ks = str(k)
         if ks in _JSON_META_KEYS_ENV:
             continue
         if ks in exclude:
             continue
-        os.environ[ks] = _env_str(v)
-        applied.append(ks)
-    return applied
+        out[ks] = v
+    return out
+
+
+def load_optuna_flat_params() -> dict[str, Any]:
+    """
+    Lee el primer JSON válido entre IA_OPTUNA_PARAMS_PATH / params_optimized.json / ia_optuna_best.json.
+    Respeta IA_OPTUNA_APPLY (si está desactivado devuelve ``{}``). No modifica ``os.environ``.
+    """
+    if os.environ.get("IA_OPTUNA_APPLY", "1").strip().lower() in ("0", "false", "no"):
+        return {}
+    root = _project_root()
+    explicit = os.environ.get("IA_OPTUNA_PARAMS_PATH", "").strip()
+    paths: list[Path] = []
+    if explicit:
+        paths.append(Path(explicit))
+    else:
+        paths.extend([root / "params_optimized.json", root / "ia_optuna_best.json"])
+
+    for p in paths:
+        if not p.is_file() or p.suffix.lower() != ".json":
+            continue
+        try:
+            with p.open(encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        flat = _flatten_optuna_json_payload(data)
+        if not flat:
+            continue
+        return {str(k): _coerce_optuna_val(v) for k, v in flat.items()}
+    return {}
+
+
+def merge_optuna_into_config(config_dict: dict[str, Any] | None = None) -> dict[str, Any]:
+    """
+    Fusiona parámetros de Optuna en un dict **y** en ``os.environ`` (prioridad sobre claves repetidas).
+
+    Útil para pipelines que cargan knobs en dict y siguen usando módulos que leen sólo variables de
+    entorno. Equivalente aplicado sólo sobre el JSON elegido por ``load_optuna_flat_params()``;
+    llamá típicamente después de ``load_env_file()`` y antes de iniciar scanners/bots.
+    """
+    out = dict(config_dict or {})
+    flat = load_optuna_flat_params()
+    if not flat:
+        return out
+    out.update(flat)
+    for k, v in flat.items():
+        os.environ[str(k)] = _env_str(v)
+    return out
 
 
 def apply_optuna_overrides() -> list[str]:
