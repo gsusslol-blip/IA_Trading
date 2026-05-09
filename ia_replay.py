@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import MetaTrader5 as mt5
 import pandas as pd
 
+from mt5_price_engine import rates_df_time_as_unix_seconds
 from mt5_prices import mt5_copy_rates_from_pos_cached
 
 
@@ -59,12 +60,16 @@ def replay_from_m15_h4_windows(
 
     Completa H1/M5 vía MT5 y recorta con time ≤ último cierre M15. Requiere terminal conectado.
     """
-    if len(df_m15) < 60 or len(df_h4) < 20:
+    m15_u = rates_df_time_as_unix_seconds(df_m15)
+    h4_u = rates_df_time_as_unix_seconds(df_h4)
+    if m15_u is None or h4_u is None:
         return None
-    if "time" not in df_m15.columns or "time" not in df_h4.columns:
+    if len(m15_u) < 60 or len(h4_u) < 20:
+        return None
+    if "time" not in m15_u.columns or "time" not in h4_u.columns:
         return None
     try:
-        tc = int(df_m15["time"].iloc[-1])
+        tc = int(m15_u["time"].iloc[-1])
     except (TypeError, ValueError):
         return None
     sym = symbol.strip() or os.environ.get("IA_SCAN_SYMBOLS", "XAUUSD").split(",")[0].strip()
@@ -77,10 +82,10 @@ def replay_from_m15_h4_windows(
         return None
     d5 = pd.DataFrame(r5)
     dh1_full = pd.DataFrame(rh)
-    m15 = df_m15.copy()
+    m15 = m15_u.copy()
     m5 = d5[d5["time"] <= tc].copy()
     h1 = dh1_full[dh1_full["time"] <= tc].copy()
-    h4 = df_h4[df_h4["time"] <= tc].copy()
+    h4 = h4_u[h4_u["time"] <= tc].copy()
     if len(h4) < 20 or len(h1) < 80 or len(m5) < 60:
         return None
 
@@ -120,13 +125,20 @@ def slices_upto_m15_time(
     except (TypeError, ValueError):
         return None
 
-    m15 = df_m15[df_m15["time"] <= tc].copy()
+    dm15 = rates_df_time_as_unix_seconds(df_m15)
+    dm5 = rates_df_time_as_unix_seconds(df_m5)
+    dh1 = rates_df_time_as_unix_seconds(df_h1)
+    dh4 = rates_df_time_as_unix_seconds(df_h4)
+    if dm15 is None or dm5 is None or dh1 is None or dh4 is None:
+        return None
+
+    m15 = dm15[dm15["time"] <= tc].copy()
     if len(m15) < 60:
         return None
 
-    m5 = df_m5[df_m5["time"] <= tc].copy()
-    h1 = df_h1[df_h1["time"] <= tc].copy()
-    h4 = df_h4[df_h4["time"] <= tc].copy()
+    m5 = dm5[dm5["time"] <= tc].copy()
+    h1 = dh1[dh1["time"] <= tc].copy()
+    h4 = dh4[dh4["time"] <= tc].copy()
     if len(h4) < 20 or len(h1) < 80 or len(m5) < 60:
         return None
 

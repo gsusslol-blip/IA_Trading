@@ -48,8 +48,8 @@ from local_env import apply_optuna_overrides as _apply_optuna_overrides, load_en
 from ia_replay import IAReplaySnapshot, dataframe_for_regime, replay_from_m15_h4_windows
 from market_regime import regime_gate_should_skip, regime_gate_should_skip_from_hlc
 from m15_ma_scan import _resolve_scan_symbol
-from mt5_price_engine import PriceEngine, get_price_engine
-from mt5_prices import get_rates_optimized, mt5_copy_rates_from_pos_cached
+from mt5_price_engine import PriceEngine, get_price_engine, rates_df_time_as_unix_seconds
+from mt5_prices import mt5_copy_rates_from_pos_cached
 from signal_analysis import (
     MarketPackRatesReplay,
     analyze_market_pack,
@@ -495,18 +495,21 @@ def analizar_ia(
 
     replay_eff: IAReplaySnapshot | None = replay
     if replay_eff is None and (df_m15_override is not None or df_h4_override is not None):
-        # ``replay_from_m15_h4_windows`` compara ``time`` en segundos unix; usar rates crudos aquí.
-        dm = (
+        dm_raw = (
             df_m15_override
             if df_m15_override is not None
-            else get_rates_optimized(simbolo, tf_m15_use, m15_need)
+            else _df_from_engine(pe, simbolo, tf_m15_use, m15_need)
         )
-        dh = (
+        dh_raw = (
             df_h4_override
             if df_h4_override is not None
-            else get_rates_optimized(simbolo, tf_h4_use, max(80, 60))
+            else _df_from_engine(pe, simbolo, tf_h4_use, max(80, 60))
         )
-        if dm is None or dh is None or len(dm) < 60 or len(dh) < 20:
+        if dm_raw is None or dh_raw is None or len(dm_raw) < 60 or len(dh_raw) < 20:
+            return "Error datos M15/H4 (overrides)"
+        dm = rates_df_time_as_unix_seconds(dm_raw)
+        dh = rates_df_time_as_unix_seconds(dh_raw)
+        if dm is None or dh is None:
             return "Error datos M15/H4 (overrides)"
         replay_eff = replay_from_m15_h4_windows(simbolo, dm, dh)
         if replay_eff is None:

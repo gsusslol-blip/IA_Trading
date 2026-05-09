@@ -29,6 +29,10 @@ python optuna_walkforward.py -> python ia_auto_trade_loop.py y verificar "Config
   IA_AUTO_RISK_BUNDLE_TRADES=5
   IA_AUTO_MAX_TRADES=5 — opcional; corta el bucle tras N órdenes enviadas ok.
   IA_EXEC_QUALITY_ENABLE / IA_EXEC_QUALITY_CSV — log CSV de precio pedido vs ejecutado y spread (trade_audit).
+  IA_LOG_MAX_MB — rota execution_quality.csv al superar el tamaño (default 5; 0 = off; ver ia_utils).
+  IA_EXEC_SLIP_GUARD_ENABLE=1 — no abre nueva orden si el slippage promedio reciente según CSV supera el
+    umbral (delega en trade_audit.check_slippage_safety; ver slippage_guard_allows_order).
+    Alias: IA_MAX_SLIPPAGE_AVG (si no definís IA_EXEC_SLIP_GUARD_MAX_AVG_PTS), IA_SLIPPAGE_WINDOW.
 
   IA_AUTO_MULTI_PER_ROUND=1 — en cada pasada de escaneo, intentar todos los símbolos con señal (no parar en la primera orden).
   IA_AUTO_BURST_DELAY_S=3 — pausa entre órdenes en la misma ronda (varios símbolos u oportunidades seguidas).
@@ -119,7 +123,14 @@ from mt5_prices import (
     _telegram_send,
     es_spread_valido,
 )
-from trade_audit import log_execution_quality, log_trade_entry
+from ia_risk_manager import calcular_lotaje_dinamico
+from ia_utils import execution_quality_max_mb_from_env, rotar_log_por_tamaño
+from trade_audit import (
+    execution_quality_csv_path,
+    log_execution_quality,
+    log_trade_entry,
+    slippage_guard_allows_order,
+)
 
 
 _IA_PAUSE_POR_COMANDO_TELEGRAM = False
@@ -711,6 +722,12 @@ def _risk_percent_per_trade() -> float | None:
             s = float(single_raw)
             if s > 0:
                 return s
+        # Alias simple (nuevo): si no usás bundle ni per-trade, podés poner IA_RISK_PERCENT=1.0
+        alias_raw = os.environ.get("IA_RISK_PERCENT", "").strip()
+        if alias_raw:
+            a = float(alias_raw)
+            if a > 0:
+                return a
     except ValueError:
         pass
     return None
@@ -796,45 +813,6 @@ def _notify_trade_telegram(
     )
     if not _telegram_send(msg):
         print("[TG] No se pudo enviar aviso de operación.", file=sys.stderr)
-
-
-def _volume_from_equity_risk(
-    simbolo: str,
-    buy: bool,
-    price: float,
-    sl: float,
-    info,
-    risk_pct: float,
-) -> float | None:
-    """
-    Volumen en lotes para arriesgar ~risk_pct % de la equity si el precio toca el SL.
-
-    Usa order_calc_profit(1 lote) entre precio de entrada y SL: válido para cualquier símbolo y
-    distancia de SL (porcentaje, ATR×mult, etc.). A mayor distancia al SL, mayor pérdida por lote y
-    menor volumen resultante — riesgo monetario estable.
-    """
-    ai = mt5.account_info()
-    if ai is None or risk_pct <= 0:
-        return None
-    equity = float(getattr(ai, "equity", 0.0) or 0.0)
-    if equity <= 0:
-        return None
-    risk_money = equity * (risk_pct / 100.0)
-    typ = mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL
-    pl = mt5.order_calc_profit(typ, simbolo, 1.0, float(price), float(sl))
-    if pl is None:
-        return None
-    loss_mag = abs(min(0.0, float(pl)))
-    if loss_mag <= 1e-12:
-        return None
-    vol = risk_money / loss_mag
-    vol_step = float(getattr(info, "volume_step", 0.01) or 0.01)
-    vol_min = float(getattr(info, "volume_min", 0.01) or 0.01)
-    vol_max = float(getattr(info, "volume_max", 0.0) or 0.0)
-    vol = max(vol_min, _round_down_to_step(vol, vol_step))
-    if vol_max > 0:
-        vol = min(vol, vol_max)
-    return vol
 
 
 def _loss_per_lot_from_entry_sl(
@@ -972,26 +950,6 @@ def _total_risk_cap_allows_new_order(
     return True, ""
 
 
-def calcular_lotaje_dinamico(
-    simbolo: str,
-    buy: bool,
-    entry_price: float,
-    sl_price: float,
-    riesgo_percent: float,
-    *,
-    info=None,
-) -> float | None:
-    """
-    Mismo criterio que el bot: riesgo fijo en % de equity con lote ajustado al SL real (no “pips” a
-    mano). Delega en order_calc_profit del terminal (oro, forex, índices).
-    """
-    if info is None:
-        info = mt5.symbol_info(simbolo)
-    if info is None:
-        return None
-    return _volume_from_equity_risk(simbolo, buy, entry_price, sl_price, info, riesgo_percent)
-
-
 def enviar_orden(
     simbolo: str,
     buy: bool,
@@ -1054,6 +1012,15 @@ def enviar_orden(
             )
             return False
 
+    ok_slip, slip_why = slippage_guard_allows_order(simbolo)
+    if not ok_slip:
+        print(
+            f"{simbolo}: bloqueado por slippage reciente ({slip_why}). "
+            "IA_EXEC_SLIP_GUARD_ENABLE=0 o subí IA_EXEC_SLIP_GUARD_MAX_AVG_PTS.",
+            file=sys.stderr,
+        )
+        return False
+
     price = ask if buy else bid
     digits = int(getattr(info, "digits", 5) or 5)
     point = float(getattr(info, "point", 0.0) or 0.0)
@@ -1080,7 +1047,13 @@ def enviar_orden(
         except ValueError:
             atr_period = 14
         try:
-            atr_mult = float(os.environ.get("IA_AUTO_SL_ATR_MULT", "1.6").strip() or "1.6")
+            atr_mult = float(
+                os.environ.get(
+                    "IA_AUTO_SL_ATR_MULT",
+                    os.environ.get("IA_ATR_SL_MULT", "1.6"),
+                ).strip()
+                or "1.6"
+            )
         except ValueError:
             atr_mult = 1.6
         m5 = mt5_copy_rates_from_pos_cached(simbolo, mt5.TIMEFRAME_M5, 0, 400)
@@ -1124,7 +1097,14 @@ def enviar_orden(
 
     rper = _risk_percent_per_trade()
     if rper is not None:
-        vcalc = calcular_lotaje_dinamico(simbolo, buy, price, sl, rper, info=info)
+        vcalc = calcular_lotaje_dinamico(
+            simbolo,
+            buy=buy,
+            entry_price=price,
+            sl_price=sl,
+            riesgo_percent=rper,
+            info=info,
+        )
         if vcalc is None:
             print(
                 "[IA_AUTO] No se pudo calcular volumen por riesgo (order_calc_profit); "
@@ -1382,6 +1362,13 @@ def main() -> None:
                     "IA_M15_MOMENTUM_MIN_BODY_RATIO", "0.45"
                 )
                 relax_ctx["block_hv_base"] = os.environ.get("IA_REGIME_BLOCK_HIGH_VOL", "1")
+
+            try:
+                _mx_log = execution_quality_max_mb_from_env()
+                if _mx_log > 0:
+                    rotar_log_por_tamaño(execution_quality_csv_path(), _mx_log)
+            except Exception:
+                pass
 
             if trades_sent_session > 0 and int(relax_ctx.get("level", 0)) > 0:
                 print("[auto-relax] reinicio tras orden; niveles de relajación a cero.")

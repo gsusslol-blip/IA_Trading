@@ -13,6 +13,8 @@ Uso:
   from mt5_price_engine import get_price_engine
 
   df = get_price_engine().get_data(sym, mt5.TIMEFRAME_M15, 120)
+
+Normalización unix para replay: ``mt5_prices.ensure_unix_time`` (= ``rates_df_time_as_unix_seconds`` aquí).
 """
 
 from __future__ import annotations
@@ -21,7 +23,9 @@ from typing import Any
 
 import pandas as pd
 
-from mt5_prices import get_rates_optimized, mt5_rates_cache_clear
+from mt5_prices import ensure_unix_time, get_rates_optimized, mt5_rates_cache_clear
+
+rates_df_time_as_unix_seconds = ensure_unix_time
 
 
 class PriceEngine:

@@ -82,6 +82,52 @@ def get_historical_data(symbol: str, timeframe: int, n_bars: int) -> pd.DataFram
     return get_rates_optimized(symbol, timeframe, n_bars)
 
 
+def ensure_unix_time(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """
+    Fuerza la columna ``time`` a segundos unix ``int64`` (mismo criterio que ``copy_rates`` / replay).
+
+    Cubre: índice ``DatetimeIndex``, columna ``time`` en ``datetime64``, numéricos o texto parseable.
+    No añade ``time_unix``: se normaliza ``time`` para que ``replay_from_m15_h4_windows`` y código legacy
+    comparen enteros sin fricción con el ``PriceEngine`` (datetime).
+    """
+    if df is None:
+        return None
+    if df.empty:
+        return df.copy()
+
+    def _epoch_seconds_series(series: pd.Series) -> pd.Series:
+        ts = pd.to_datetime(series, utc=True, errors="coerce")
+
+        def _one(z: object) -> int:
+            if pd.isna(z):
+                return 0
+            return int(pd.Timestamp(z).timestamp())
+
+        return ts.map(_one).astype("int64", copy=False)
+
+    out = df.copy()
+    # Índice temporal → columna ``time``
+    if isinstance(out.index, pd.DatetimeIndex):
+        secs = [int(pd.Timestamp(t).timestamp()) if pd.notna(t) else 0 for t in out.index]
+        body = out.reset_index(drop=True)
+        if "time" in body.columns:
+            body = body.drop(columns=["time"])
+        body.insert(0, "time", secs)
+        out = body
+
+    if "time" not in out.columns:
+        return out
+
+    s = out["time"]
+    if pd.api.types.is_datetime64_any_dtype(s):
+        out["time"] = _epoch_seconds_series(s)
+    elif pd.api.types.is_numeric_dtype(s):
+        out["time"] = pd.to_numeric(s, errors="coerce").fillna(0).astype("int64")
+    else:
+        out["time"] = _epoch_seconds_series(s)
+    return out
+
+
 def _env_winrate_target() -> float:
     """WINRATE_TARGET en .env: 0.85 o 85 → 85 % aciertos; 0 o vacío = desactivado."""
     raw = os.environ.get("WINRATE_TARGET", "").strip()

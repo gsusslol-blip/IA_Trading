@@ -16,6 +16,21 @@ Calidad de ejecución / slippage (MT5 tras orden OK):
   IA_EXEC_SLIP_SPREAD_WARN_RATIO=3 — aviso stderr si slip_pts > spread * ratio con spread bajo
   IA_EXEC_WARN_MAX_SPREAD_POINTS=50 — solo avisar si spread actual <= este umbral
   IA_EXEC_WARN_MIN_SLIPPAGE_POINTS=2 — ignorar ruido por debajo de esto (puntos)
+
+Bloqueo de nuevas órdenes si el slippage reciente es malo (ia_auto_trade_loop.enviar_orden):
+  IA_EXEC_SLIP_GUARD_ENABLE=1
+  IA_EXEC_SLIP_GUARD_WINDOW=3 — últimas N filas del símbolo con slippage_points válido
+    (alias alternativo si esta clave está vacía: IA_SLIPPAGE_WINDOW)
+  IA_EXEC_SLIP_GUARD_MAX_AVG_PTS=8 — si el promedio de esas N supera esto, no envía (0 = desactiva umbral)
+    Si no definís esta clave (o está vacía), se usa IA_MAX_SLIPPAGE_AVG.
+  IA_EXEC_SLIP_GUARD_MIN_SAMPLES=3 — mínimo de muestras para aplicar (fail-open si hay menos)
+
+Rotación del CSV execution_quality por tamaño (mantiene I/O rápido; guarda `.old`):
+  IA_LOG_MAX_MB=5 — al superarlo renombra a execution_quality.csv.old (alias: IA_EXEC_LOG_MAX_MB).
+  Poné ``0`` para desactivar.
+
+``check_slippage_safety(..., symbol=None)`` — misma heurística vía ``pandas.read_csv``; con ``symbol=None``
+usa las últimas ``window`` filas del CSV mezclando activos (modo “archivo crudo”).
 """
 
 from __future__ import annotations
@@ -25,6 +40,10 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pandas as pd
+
+from ia_utils import execution_quality_max_mb_from_env, rotar_log_por_tamaño
 
 
 def _enabled() -> bool:
@@ -130,6 +149,178 @@ def _exec_quality_path() -> Path:
     return p if p.is_absolute() else (root / p)
 
 
+def execution_quality_csv_path() -> Path:
+    """Ruta del CSV de calidad de ejecución (``IA_EXEC_QUALITY_CSV``), misma que usa el guard."""
+    return _exec_quality_path()
+
+
+def _exec_slip_guard_max_avg_pts_from_env() -> float:
+    """
+    Preferencia: ``IA_EXEC_SLIP_GUARD_MAX_AVG_PTS`` si viene definido (cadena no vacía; ``0`` desactiva).
+    Si falta o está vacío, ``IA_MAX_SLIPPAGE_AVG``.
+    """
+    primary = os.environ.get("IA_EXEC_SLIP_GUARD_MAX_AVG_PTS")
+    if primary is not None and str(primary).strip() != "":
+        try:
+            return float(primary.strip())
+        except ValueError:
+            return 0.0
+    alt = os.environ.get("IA_MAX_SLIPPAGE_AVG", "").strip()
+    if alt:
+        try:
+            v = float(alt)
+            return v if v == v else 0.0
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _exec_slip_guard_window_from_env() -> int:
+    """``IA_EXEC_SLIP_GUARD_WINDOW`` con fallback ``IA_SLIPPAGE_WINDOW``; default 3."""
+    for key in ("IA_EXEC_SLIP_GUARD_WINDOW", "IA_SLIPPAGE_WINDOW"):
+        raw = os.environ.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            return max(1, min(50, int(str(raw).strip())))
+        except ValueError:
+            continue
+    return 3
+
+
+def _exec_slip_guard_min_samples_from_env(window_eff: int) -> int:
+    try:
+        min_samples = int(
+            os.environ.get("IA_EXEC_SLIP_GUARD_MIN_SAMPLES", str(window_eff)).strip() or str(window_eff)
+        )
+    except ValueError:
+        min_samples = window_eff
+    return max(1, min(min_samples, window_eff))
+
+
+def is_market_safe_to_trade(
+    csv_path: str | Path | None = None,
+    *,
+    symbol: str | None = None,
+) -> bool:
+    """
+    Heurística rápida: ``True`` si el slippage promedio reciente no supera el umbral por entorno.
+
+    Usa los mismos alias que ``slippage_guard_allows_order`` (sin necesidad de
+    ``IA_EXEC_SLIP_GUARD_ENABLE``): ``IA_EXEC_SLIP_GUARD_MAX_AVG_PTS`` o ``IA_MAX_SLIPPAGE_AVG``,
+    ventana ``IA_EXEC_SLIP_GUARD_WINDOW`` o ``IA_SLIPPAGE_WINDOW``.
+    Con umbral ``<= 0`` siempre ``True`` (sin bloque).
+    """
+    max_avg = _exec_slip_guard_max_avg_pts_from_env()
+    if max_avg <= 0:
+        return True
+    window = _exec_slip_guard_window_from_env()
+    ms_eff = _exec_slip_guard_min_samples_from_env(window)
+    p = Path(csv_path) if csv_path is not None else execution_quality_csv_path()
+    ok, _ = check_slippage_safety(
+        p,
+        symbol=symbol,
+        window=window,
+        max_avg_points=max_avg,
+        min_samples=ms_eff,
+    )
+    return ok
+
+
+def check_slippage_safety(
+    csv_path: str | Path | None,
+    *,
+    symbol: str | None = None,
+    window: int = 3,
+    max_avg_points: float = 50.0,
+    min_samples: int | None = None,
+) -> tuple[bool, str]:
+    """
+    ``True`` si el slippage promedio reciente es aceptable (fail-open).
+
+    Con ``symbol`` filtra filas antes de tomar las últimas ``window`` orden cronológicas del CSV.
+    Con ``symbol=None`` se usa ``DataFrame.tail(window)`` sobre el archivo completo (últimas N operaciones).
+
+    Si ``max_avg_points`` <= 0, siempre ``True``.
+    """
+    try:
+        w = max(1, min(250, int(window)))
+    except (TypeError, ValueError):
+        w = 3
+    if max_avg_points <= 0:
+        return True, ""
+
+    ms = min_samples if min_samples is not None else w
+    try:
+        ms_i = int(ms)
+    except (TypeError, ValueError):
+        ms_i = w
+    ms_eff = max(1, min(ms_i, w))
+
+    p = Path(csv_path) if csv_path is not None else None
+    if p is None or not p.is_file():
+        return True, ""
+
+    try:
+        df = pd.read_csv(p)
+    except (FileNotFoundError, OSError, pd.errors.ParserError, pd.errors.EmptyDataError):
+        return True, ""
+    if df.empty or "slippage_points" not in df.columns:
+        return True, ""
+
+    if symbol:
+        sym_u = symbol.strip().upper()
+        col = df.get("symbol", pd.Series(dtype=str)).astype(str).str.strip().str.upper()
+        df = df.loc[col == sym_u].reset_index(drop=True)
+
+    tail = df.tail(w)
+    if len(tail) < ms_eff:
+        return True, ""
+
+    pts = pd.to_numeric(tail["slippage_points"], errors="coerce")
+    if pts.isna().all():
+        return True, ""
+
+    avg = float(pts.mean())
+    if avg != avg:
+        return True, ""
+    if avg > max_avg_points:
+        return False, f"slippage_avg={avg:.3g}pts (ventana={len(tail)}) > límite {max_avg_points:g}pts"
+
+    return True, ""
+
+
+def slippage_guard_allows_order(symbol: str) -> tuple[bool, str]:
+    """
+    Si ``IA_EXEC_SLIP_GUARD_ENABLE=1`` y existen muestras suficientes, delega en
+    ``check_slippage_safety`` con el mismo CSV de ejecución.
+
+    Fail-open: CSV inexistente, sin columna, pocas muestras, o ``MAX_AVG_PTS<=0`` → permite orden.
+    """
+    if os.environ.get("IA_EXEC_SLIP_GUARD_ENABLE", "0").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return True, ""
+    max_avg = _exec_slip_guard_max_avg_pts_from_env()
+    if max_avg <= 0.0:
+        return True, ""
+    window = _exec_slip_guard_window_from_env()
+    min_samples_eff = _exec_slip_guard_min_samples_from_env(window)
+
+    p = _exec_quality_path()
+
+    ok, msg = check_slippage_safety(
+        p,
+        symbol=symbol,
+        window=window,
+        max_avg_points=max_avg,
+        min_samples=min_samples_eff,
+    )
+    return ok, msg
+
+
 def log_execution_quality(
     *,
     symbol: str,
@@ -209,6 +400,12 @@ def log_execution_quality(
             slippage_points=slip_pts,
             spread_points=float(spread_points) if spread_points is not None else None,
         )
+        try:
+            mx = execution_quality_max_mb_from_env()
+            if mx > 0:
+                rotar_log_por_tamaño(p, mx)
+        except Exception:
+            pass
     except Exception:
         return
 
