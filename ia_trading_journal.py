@@ -73,6 +73,14 @@ def _state_path() -> Path:
     return p if p.is_absolute() else (_root() / p)
 
 
+def journal_effective_tz() -> str:
+    return _journal_tz_name()
+
+
+def journal_csv_filename() -> str:
+    return _csv_path().name
+
+
 def _float_env(key: str, default: float) -> float:
     try:
         return float(os.environ.get(key, str(default)).replace(",", ".").strip() or str(default))
@@ -120,7 +128,7 @@ def _alerts_enabled() -> bool:
     if raw in ("1", "true", "yes"):
         return True
     try:
-        from telegram_utils import _telegram_configured
+        from mt5_prices import _telegram_configured
 
         return _telegram_configured()
     except Exception:

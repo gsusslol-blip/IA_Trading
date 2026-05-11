@@ -110,7 +110,15 @@ import MetaTrader5 as mt5
 from pathlib import Path
 
 from local_env import apply_optuna_overrides, load_env_file
-from ia_trading_journal import journal_add_note, journal_flush_shutdown, journal_mark_opened_today, journal_tick
+from ia_trading_journal import (
+    journal_add_note,
+    journal_csv_filename,
+    journal_effective_tz,
+    journal_enabled,
+    journal_flush_shutdown,
+    journal_mark_opened_today,
+    journal_tick,
+)
 from ia_scanner_loop import analizar_ia, es_horario_seguro, validate_scan_session_env
 from m15_ma_scan import _resolve_scan_symbol
 from ia_auto_memory import sync_memory_from_mt5, summary_from_csv
@@ -1427,6 +1435,10 @@ def enviar_orden(
                 ia_confidence=ia_confidence,
                 trailing_tp=use_trailing_tp,
             )
+            try:
+                journal_mark_opened_today()
+            except Exception:
+                pass
             return True
         print(
             f"Rechazado filling={fm} retcode={retcode} comment={getattr(result, 'comment', '')}",
@@ -1579,6 +1591,12 @@ def main() -> None:
                 ex.append("salir del bucle al tope pérdida")
             sfx = f" | {'; '.join(ex)}" if ex else ""
             print(f"Límites diarios (TZ {tz_b or 'UTC'}): {' | '.join(parts)}{sfx}")
+
+        if journal_enabled():
+            print(
+                f"Bitácora Fase 1: CSV {journal_csv_filename()} | TZ {journal_effective_tz()} "
+                f"(IA_JOURNAL_ENABLE=1)"
+            )
 
         if deadline_local is not None and datetime.now() >= deadline_local:
             print(
@@ -1793,6 +1811,10 @@ def main() -> None:
         print("Auto-trading detenido.")
     finally:
         _windows_release_sleep_inhibit()
+        try:
+            journal_flush_shutdown("salida ia_auto_trade_loop (finally)")
+        except Exception:
+            pass
         if stopped_deadline and telegram_report and session_start_utc is not None:
             from telegram_hour_pnl import send_pnl_window_telegram
 
