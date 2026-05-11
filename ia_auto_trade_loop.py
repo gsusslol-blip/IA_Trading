@@ -55,6 +55,21 @@ Opcional: reporte_semanal.intentar_enviar_reporte_semanal_si_toca — IA_REPORTE
   sábados hora local IA_REPORTE_SEMANAL_HOUR (ver reporte_semanal.py).
 Opcional: botón pánico Telegram — IA_TELEGRAM_PANIC_ENABLE=1, comandos /DETENER y /INICIAR (ver telegram_listener.py).
 Opcional: IA_AUTO_ALLOW_WINDOWS_SLEEP=1 — permitir suspensión en Windows (default: el bucle la inhibe mientras corre).
+Opcional — Fase 1 / cuenta real (PnL cerrado BOT_MAGIC, moneda de la cuenta):
+  IA_AUTO_DAILY_PROFIT_TARGET_USD=45   — no abre nuevas órdenes si el PnL neto del día (cerrados) >= valor
+  IA_AUTO_DAILY_MAX_LOSS_USD=60       — no abre nuevas órdenes si el PnL neto del día <= -valor
+  IA_AUTO_DAILY_PNL_TZ=America/Argentina/Buenos_Aires  — día calendario para el cómputo anterior
+  IA_AUTO_STOP_LOOP_ON_DAILY_PROFIT=1 — al cumplir meta: sale del bucle ("uno y fuera"); default 0 = solo pausa nuevas entradas
+  IA_AUTO_STOP_LOOP_ON_DAILY_MAX_LOSS=1 — al cumplir tope pérdida: sale del bucle (recomendado 1 en real)
+
+  Lotaje fijo (sin sizing por riesgo): dejá vacíos IA_AUTO_RISK_* y usá IA_AUTO_LOTS=0.04 (o 0.05).
+Opcional — Bitácora Fase 1 (CSV tipo Excel; ia_trading_journal.py, convive con límites diarios):
+  IA_JOURNAL_ENABLE=1
+  IA_JOURNAL_CSV=ia_phase1_journal.csv
+  IA_JOURNAL_STATE=ia_trading_journal_state.json
+  IA_JOURNAL_TZ=   — vacío = misma TZ que IA_AUTO_DAILY_PNL_TZ
+  IA_JOURNAL_USE_EQUITY=0 — 1 = usar equity en lugar de balance
+  IA_JOURNAL_GRAD_USD=1250  IA_JOURNAL_FLOOR_USD=900  IA_JOURNAL_ALERTS=1 (Telegram al cruzar meta/piso)
 Opcional: tras `python optuna_walkforward.py`, se genera `params_optimized.json` (recomendado; fecha en
   last_optimization_date) más `ia_optuna_best.*`. El bot aplica esos valores sobre el .env al arrancar
   y, por defecto, al inicio de cada ronda de escaneo (IA_OPTUNA_RELOAD_EACH_ROUND=1).
@@ -95,6 +110,7 @@ import MetaTrader5 as mt5
 from pathlib import Path
 
 from local_env import apply_optuna_overrides, load_env_file
+from ia_trading_journal import journal_add_note, journal_flush_shutdown, journal_mark_opened_today, journal_tick
 from ia_scanner_loop import analizar_ia, es_horario_seguro, validate_scan_session_env
 from m15_ma_scan import _resolve_scan_symbol
 from ia_auto_memory import sync_memory_from_mt5, summary_from_csv
@@ -138,12 +154,11 @@ from trade_audit import (
 
 _IA_PAUSE_POR_COMANDO_TELEGRAM = False
 _LOCK_OWNED = False
+_IA_DAILY_LIMIT_NOTIFIED_DAY: str | None = None
+_IA_DAILY_LIMIT_NOTIFIED_TAG: str | None = None
 
 
 def _virtual_capital_state_path() -> Path:
-    """
-    Archivo local para persistir capital virtual entre reinicios.
-    """
     root = Path(__file__).resolve().parent
     name = os.environ.get("IA_AUTO_VIRTUAL_CAPITAL_STATE", "").strip() or "ia_virtual_capital.json"
     p = Path(name)
@@ -152,6 +167,135 @@ def _virtual_capital_state_path() -> Path:
 
 def _virtual_capital_enabled() -> bool:
     return os.environ.get("IA_AUTO_VIRTUAL_CAPITAL_ENABLE", "0").strip().lower() in ("1", "true", "yes")
+
+
+def _day_bounds_utc_trading_day() -> tuple[datetime, datetime]:
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz_name = os.environ.get("IA_AUTO_DAILY_PNL_TZ", "America/Argentina/Buenos_Aires").strip()
+        tz = ZoneInfo(tz_name or "America/Argentina/Buenos_Aires")
+    except Exception:
+        tz = timezone.utc
+    now_local = datetime.now(tz)
+    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+
+
+def _daily_limits_usd_config() -> tuple[float | None, float | None]:
+    pr = os.environ.get("IA_AUTO_DAILY_PROFIT_TARGET_USD", "").strip()
+    lo = os.environ.get("IA_AUTO_DAILY_MAX_LOSS_USD", "").strip()
+    try:
+        pt = float(pr.replace(",", ".")) if pr else None
+    except ValueError:
+        pt = None
+    try:
+        ml = float(lo.replace(",", ".")) if lo else None
+    except ValueError:
+        ml = None
+    if pt is not None and pt <= 0:
+        pt = None
+    if ml is not None and ml <= 0:
+        ml = None
+    return pt, ml
+
+
+def _daily_realized_pnl_bot_account_currency() -> float | None:
+    try:
+        uf, ut = _day_bounds_utc_trading_day()
+        pnls = closed_positions_pnls_by_magic(BOT_MAGIC, uf, ut, history_lookback_days=14)
+        return float(sum(pnls))
+    except Exception:
+        return None
+
+
+def _daily_limit_state() -> tuple[float | None, str | None]:
+    pt, ml = _daily_limits_usd_config()
+    if pt is None and ml is None:
+        return None, None
+    pnl = _daily_realized_pnl_bot_account_currency()
+    if pnl is None:
+        return None, None
+    if pt is not None and pnl >= pt:
+        return pnl, "profit_cap"
+    if ml is not None and pnl <= -ml:
+        return pnl, "loss_cap"
+    return pnl, None
+
+
+def _maybe_reset_daily_notify() -> None:
+    global _IA_DAILY_LIMIT_NOTIFIED_DAY, _IA_DAILY_LIMIT_NOTIFIED_TAG
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz_name = os.environ.get("IA_AUTO_DAILY_PNL_TZ", "America/Argentina/Buenos_Aires").strip()
+        tz = ZoneInfo(tz_name or "America/Argentina/Buenos_Aires")
+        day_key = datetime.now(tz).date().isoformat()
+    except Exception:
+        day_key = date.today().isoformat()
+    if _IA_DAILY_LIMIT_NOTIFIED_DAY != day_key:
+        _IA_DAILY_LIMIT_NOTIFIED_DAY = day_key
+        _IA_DAILY_LIMIT_NOTIFIED_TAG = None
+
+
+def _stop_loop_on_daily_profit() -> bool:
+    return os.environ.get("IA_AUTO_STOP_LOOP_ON_DAILY_PROFIT", "0").strip().lower() in ("1", "true", "yes")
+
+
+def _stop_loop_on_daily_max_loss() -> bool:
+    if not os.environ.get("IA_AUTO_DAILY_MAX_LOSS_USD", "").strip():
+        return False
+    raw = os.environ.get("IA_AUTO_STOP_LOOP_ON_DAILY_MAX_LOSS", "").strip()
+    if raw == "":
+        return True
+    return raw.lower() in ("1", "true", "yes")
+
+
+def _maybe_announce_daily_limit(kind: str, pnl: float) -> None:
+    global _IA_DAILY_LIMIT_NOTIFIED_TAG
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz_name = os.environ.get("IA_AUTO_DAILY_PNL_TZ", "America/Argentina/Buenos_Aires").strip()
+        tz = ZoneInfo(tz_name or "America/Argentina/Buenos_Aires")
+        day_key = datetime.now(tz).date().isoformat()
+    except Exception:
+        day_key = date.today().isoformat()
+    tag = f"{day_key}:{kind}"
+    if _IA_DAILY_LIMIT_NOTIFIED_TAG == tag:
+        return
+    _IA_DAILY_LIMIT_NOTIFIED_TAG = tag
+    if kind == "profit_cap":
+        plain = (
+            f"IA_AUTO límite diario: meta alcanzada; PnL hoy (cerrados BOT_MAGIC) ≈ {pnl:+.2f}. "
+            "Sin nuevas órdenes."
+        )
+        html = (
+            f"<b>IA_AUTO límite diario</b>\nMeta alcanzada: PnL hoy ≈ <code>{pnl:+.2f}</code> "
+            "(cerrados BOT_MAGIC). Sin nuevas órdenes."
+        )
+    else:
+        plain = (
+            f"IA_AUTO límite diario: tope de pérdida; PnL hoy ≈ {pnl:+.2f}. Sin nuevas órdenes."
+        )
+        html = (
+            f"<b>IA_AUTO límite diario</b>\nTope de pérdida: PnL hoy ≈ <code>{pnl:+.2f}</code>. "
+            "Sin nuevas órdenes."
+        )
+    print(plain)
+    try:
+        journal_add_note(
+            "Límite diario: meta de ganancia (sin nuevas entradas)"
+            if kind == "profit_cap"
+            else "Límite diario: tope de pérdida (sin nuevas entradas)"
+        )
+    except Exception:
+        pass
+    try:
+        enviar_alerta_telegram(html)
+    except Exception:
+        pass
 
 
 def _load_or_init_virtual_capital_state() -> dict:
@@ -1420,6 +1564,22 @@ def main() -> None:
             lots_d = os.environ.get("IA_AUTO_LOTS", "0.01")
             print(f"Volumen fijo IA_AUTO_LOTS={lots_d} | SL {sl_d}% | RR {rr_d}")
 
+        pt_d, ml_d = _daily_limits_usd_config()
+        if pt_d is not None or ml_d is not None:
+            tz_b = os.environ.get("IA_AUTO_DAILY_PNL_TZ", "America/Argentina/Buenos_Aires").strip()
+            parts: list[str] = []
+            if pt_d is not None:
+                parts.append(f"meta PnL cerrado >= {pt_d:.0f} -> sin nuevas entradas")
+            if ml_d is not None:
+                parts.append(f"max pérdida diaria {ml_d:.0f} -> sin nuevas entradas")
+            ex: list[str] = []
+            if _stop_loop_on_daily_profit():
+                ex.append("salir del bucle al cumplir meta")
+            if ml_d is not None and _stop_loop_on_daily_max_loss():
+                ex.append("salir del bucle al tope pérdida")
+            sfx = f" | {'; '.join(ex)}" if ex else ""
+            print(f"Límites diarios (TZ {tz_b or 'UTC'}): {' | '.join(parts)}{sfx}")
+
         if deadline_local is not None and datetime.now() >= deadline_local:
             print(
                 f"Ya pasó la hora de cierre ({os.environ.get('IA_AUTO_STOP_AT')}) hoy; no se opera.",
@@ -1449,6 +1609,11 @@ def main() -> None:
                 "no",
             ):
                 cargar_configuracion_optimizada()
+
+            try:
+                journal_tick()
+            except Exception as e:
+                print(f"[bitácora] {e}", file=sys.stderr)
 
             if "mom_br_base" not in relax_ctx:
                 relax_ctx["mom_br_base"] = os.environ.get(
@@ -1526,6 +1691,19 @@ def main() -> None:
 
             if use_hours and not es_horario_seguro():
                 time.sleep(interval)
+                continue
+
+            _maybe_reset_daily_notify()
+            pnl_d, lim_k = _daily_limit_state()
+            if lim_k is not None and pnl_d is not None:
+                _maybe_announce_daily_limit(lim_k, pnl_d)
+                stop_p = lim_k == "profit_cap" and _stop_loop_on_daily_profit()
+                stop_l = lim_k == "loss_cap" and _stop_loop_on_daily_max_loss()
+                if stop_p or stop_l:
+                    lab = "meta diaria" if stop_p else "tope pérdida diaria"
+                    print(f"Fin bucle: {lab}.")
+                    break
+                time.sleep(max(float(interval), 5.0))
                 continue
 
             traded_this_round = False
