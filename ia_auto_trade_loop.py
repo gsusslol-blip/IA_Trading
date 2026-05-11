@@ -81,12 +81,13 @@ from __future__ import annotations
 
 import atexit
 import ctypes
+import json
 import os
 import re
 import sys
 import time
 import csv
-from datetime import date, datetime, time as dt_time, timezone
+from datetime import date, datetime, time as dt_time, timezone, timedelta
 
 import MetaTrader5 as mt5
 
@@ -122,6 +123,7 @@ from mt5_prices import (
     _telegram_configured,
     _telegram_send,
     es_spread_valido,
+    closed_positions_pnls_by_magic,
 )
 from ia_risk_manager import calcular_lotaje_dinamico
 from ia_utils import execution_quality_max_mb_from_env, rotar_log_por_tamaño
@@ -135,6 +137,93 @@ from trade_audit import (
 
 _IA_PAUSE_POR_COMANDO_TELEGRAM = False
 _LOCK_OWNED = False
+
+
+def _virtual_capital_state_path() -> Path:
+    """
+    Archivo local para persistir capital virtual entre reinicios.
+    """
+    root = Path(__file__).resolve().parent
+    name = os.environ.get("IA_AUTO_VIRTUAL_CAPITAL_STATE", "").strip() or "ia_virtual_capital.json"
+    p = Path(name)
+    return p if p.is_absolute() else (root / p)
+
+
+def _virtual_capital_enabled() -> bool:
+    return os.environ.get("IA_AUTO_VIRTUAL_CAPITAL_ENABLE", "0").strip().lower() in ("1", "true", "yes")
+
+
+def _load_or_init_virtual_capital_state() -> dict:
+    """
+    State mínimo:
+      - start_usd: float
+      - start_utc: ISO string (UTC)
+    """
+    p = _virtual_capital_state_path()
+    if p.is_file():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8") or "{}")
+            if isinstance(data, dict) and "start_usd" in data and "start_utc" in data:
+                return data
+        except Exception:
+            pass
+    try:
+        start_usd = float(os.environ.get("IA_AUTO_VIRTUAL_CAPITAL_START_USD", "1000").strip() or "1000")
+    except ValueError:
+        start_usd = 1000.0
+    start_usd = max(1.0, float(start_usd))
+    data = {
+        "start_usd": start_usd,
+        "start_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    try:
+        p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    return data
+
+
+def _virtual_equity_usd_now() -> float | None:
+    """
+    Equity virtual = start_usd + PnL neto (profit+commission+swap) de cierres BOT_MAGIC desde start_utc.
+    Retorna None si no está habilitado.
+    """
+    if not _virtual_capital_enabled():
+        return None
+    st = _load_or_init_virtual_capital_state()
+    try:
+        start_usd = float(st.get("start_usd", 1000.0) or 1000.0)
+    except (TypeError, ValueError):
+        start_usd = 1000.0
+    start_usd = max(1.0, float(start_usd))
+    start_iso = str(st.get("start_utc", "") or "").strip()
+    try:
+        start_dt = datetime.fromisoformat(start_iso)
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        start_dt = datetime.now(timezone.utc) - timedelta(days=3650)
+    now_dt = datetime.now(timezone.utc)
+    try:
+        pnls = closed_positions_pnls_by_magic(BOT_MAGIC, start_dt, now_dt, history_lookback_days=30)
+    except Exception:
+        return None
+    v = start_usd + float(sum(pnls))
+    return max(1.0, float(v))
+
+
+def _effective_risk_percent_for_account(risk_percent_cfg: float, *, account_equity: float) -> float:
+    """
+    Si IA_AUTO_VIRTUAL_CAPITAL_ENABLE=1, interpreta `risk_percent_cfg` como % del capital virtual,
+    y lo traduce al % equivalente sobre la equity real de la cuenta.
+    """
+    if account_equity <= 0:
+        return float(risk_percent_cfg)
+    v_eq = _virtual_equity_usd_now()
+    if v_eq is None:
+        return float(risk_percent_cfg)
+    risk_money = v_eq * (float(risk_percent_cfg) / 100.0)
+    return (risk_money / float(account_equity)) * 100.0
 
 
 def _send_status_telegram() -> None:
@@ -1097,12 +1186,15 @@ def enviar_orden(
 
     rper = _risk_percent_per_trade()
     if rper is not None:
+        acct = mt5.account_info()
+        equity_now = float(getattr(acct, "equity", 0.0) or 0.0) if acct is not None else 0.0
+        rper_eff = _effective_risk_percent_for_account(float(rper), account_equity=equity_now)
         vcalc = calcular_lotaje_dinamico(
             simbolo,
             buy=buy,
             entry_price=price,
             sl_price=sl,
-            riesgo_percent=rper,
+            riesgo_percent=rper_eff,
             info=info,
         )
         if vcalc is None:
