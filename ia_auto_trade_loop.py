@@ -75,6 +75,7 @@ Riesgo dinámico (recomendado): con IA_AUTO_RISK_BUNDLE_PERCENT / IA_AUTO_RISK_B
 IA_AUTO_RISK_PER_TRADE_PERCENT, el lote se calcula para que, si se activa el SL, la pérdida sea ~ese
 % de la equity. Con IA_AUTO_SL_MODE=atr, un ATR más alto aleja el SL; la pérdida por 1 lote sube y
 el volumen baja — mismo riesgo en dinero (mt5.order_calc_profit sobre 1 lote, precio entrada→SL).
+
 """
 
 from __future__ import annotations
