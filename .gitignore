@@ -34,7 +34,6 @@ ia_auto_memory_state.json
 backup_safe*.zip
 
 # Datos de ejecución (no versionar; usar respaldo ZIP o export manual)
-watchdog.log
 bot_demo_log.csv
 ia_auto_trade_memory.csv
 scan_decisions.csv
