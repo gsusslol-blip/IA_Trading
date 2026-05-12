@@ -254,15 +254,6 @@ def _append_csv_row(
         print(f"[bitácora] no se pudo escribir CSV: {e}", flush=True)
 
 
-@dataclass
-class _OpenDay:
-    day_index: int
-    calendar: date
-    saldo_inicial: float
-    operated: bool
-    last_snapshot: float
-
-
 def _parse_date(s: str) -> date | None:
     try:
         return date.fromisoformat(s.strip())
