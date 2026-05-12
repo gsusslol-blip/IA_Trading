@@ -15,6 +15,9 @@ Variables de entorno:
   IA_JOURNAL_GRAD_USD=1250 — aviso "meta de fase" (saldo final del día)
   IA_JOURNAL_FLOOR_USD=900 — aviso "revisar parámetros" si saldo final < este valor
   IA_JOURNAL_ALERTS=1 — Telegram + print en cruces (default 1 si TELEGRAM_* y journal activo)
+  IA_JOURNAL_RESET_ON_START=1 — al primer journal_tick del proceso: archiva CSV en journal_backup/, borra
+    estado; día 1 desde hoy. Quitar del .env tras un arranque para no repetir. En cuenta real: otros
+    IA_JOURNAL_CSV / IA_JOURNAL_STATE (no reutilizar los de demo).
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 _JOURNAL_NOTES: list[str] = []
+_JOURNAL_START_RESET_DONE = False
 
 
 def journal_enabled() -> bool:
@@ -71,6 +75,46 @@ def _state_path() -> Path:
     raw = os.environ.get("IA_JOURNAL_STATE", "").strip() or "ia_trading_journal_state.json"
     p = Path(raw)
     return p if p.is_absolute() else (_root() / p)
+
+
+def _env_truthy(key: str) -> bool:
+    return os.environ.get(key, "").strip().lower() in ("1", "true", "yes")
+
+
+def _apply_journal_reset_on_start_if_requested() -> None:
+    """
+    IA_JOURNAL_RESET_ON_START=1: una vez por proceso, archiva CSV y borra estado para empezar
+    el registro desde hoy (p. ej. demo nueva). No toca archivos si el flag no está activo.
+    """
+    global _JOURNAL_START_RESET_DONE
+    if _JOURNAL_START_RESET_DONE:
+        return
+    if not _env_truthy("IA_JOURNAL_RESET_ON_START"):
+        return
+    _JOURNAL_START_RESET_DONE = True
+    _JOURNAL_NOTES.clear()
+    csv_p = _csv_path()
+    st_p = _state_path()
+    archived: str | None = None
+    if csv_p.is_file():
+        try:
+            bak = _root() / "journal_backup"
+            bak.mkdir(exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dest = bak / f"{csv_p.stem}_{ts}{csv_p.suffix}"
+            csv_p.replace(dest)
+            archived = str(dest)
+        except Exception as e:
+            print(f"[bitácora] no se pudo archivar CSV: {e}", flush=True)
+    if st_p.is_file():
+        try:
+            st_p.unlink()
+        except Exception as e:
+            print(f"[bitácora] no se pudo borrar estado: {e}", flush=True)
+    msg = "[bitácora] Reinicio desde cero (IA_JOURNAL_RESET_ON_START=1); día 1 desde hoy."
+    if archived:
+        msg += f" CSV anterior → {archived}"
+    print(msg + " Quitá IA_JOURNAL_RESET_ON_START del .env si no querés repetir al reiniciar.", flush=True)
 
 
 def journal_effective_tz() -> str:

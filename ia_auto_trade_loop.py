@@ -70,6 +70,11 @@ Opcional — Bitácora Fase 1 (CSV tipo Excel; ia_trading_journal.py, convive co
   IA_JOURNAL_TZ=   — vacío = misma TZ que IA_AUTO_DAILY_PNL_TZ
   IA_JOURNAL_USE_EQUITY=0 — 1 = usar equity en lugar de balance
   IA_JOURNAL_GRAD_USD=1250  IA_JOURNAL_FLOOR_USD=900  IA_JOURNAL_ALERTS=1 (Telegram al cruzar meta/piso)
+  IA_JOURNAL_RESET_ON_START=1 — una sola vez al arrancar el proceso: archiva el CSV actual en journal_backup/,
+    borra el JSON de estado y el contador de día vuelve a 1 desde hoy (demo “desde ahora”). Quitá esta
+    variable del .env después del primer arranque para no respaldar de nuevo cada reinicio.
+  Cuenta real (bitácora nueva): usá otros nombres, p.ej. IA_JOURNAL_CSV=ia_phase1_journal_real.csv y
+    IA_JOURNAL_STATE=ia_trading_journal_state_real.json (sin mezclar con la demo).
 Opcional: tras `python optuna_walkforward.py`, se genera `params_optimized.json` (recomendado; fecha en
   last_optimization_date) más `ia_optuna_best.*`. El bot aplica esos valores sobre el .env al arrancar
   y, por defecto, al inicio de cada ronda de escaneo (IA_OPTUNA_RELOAD_EACH_ROUND=1).
