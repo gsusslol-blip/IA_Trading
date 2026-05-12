@@ -46,3 +46,7 @@ execution_quality.csv
 ia_auto_trade_loop_runtime.log
 ia_phase1_journal.csv
 ia_trading_journal_state.json
+ia_phase1_journal_real.csv
+ia_trading_journal_state_real.json
+execution_quality_real.csv
+journal_backup/

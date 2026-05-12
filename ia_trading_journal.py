@@ -102,7 +102,7 @@ def _apply_journal_reset_on_start_if_requested() -> None:
             bak.mkdir(exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             dest = bak / f"{csv_p.stem}_{ts}{csv_p.suffix}"
-            csv_p.replace(dest)
+            csv_p.rename(dest)
             archived = str(dest)
         except Exception as e:
             print(f"[bitácora] no se pudo archivar CSV: {e}", flush=True)
@@ -308,6 +308,7 @@ def journal_tick() -> None:
     """
     if not journal_enabled():
         return
+    _apply_journal_reset_on_start_if_requested()
     saldo = _account_saldo()
     if saldo is None:
         return
