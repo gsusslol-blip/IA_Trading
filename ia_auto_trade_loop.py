@@ -53,7 +53,8 @@ Opcional: precierre fin de semana (gaps) — cierre_viernes.gestionar_precierre_
   IA_WEEKEND_CLOSE_ENABLE=1, IA_WEEKEND_CLOSE_HOUR, IA_WEEKEND_TZ, IA_WEEKEND_RESUME_* (ver cierre_viernes.py).
 Opcional: reporte_semanal.intentar_enviar_reporte_semanal_si_toca — IA_REPORTE_SEMANAL_ENABLE=1,
   sábados hora local IA_REPORTE_SEMANAL_HOUR (ver reporte_semanal.py).
-Opcional: botón pánico Telegram — IA_TELEGRAM_PANIC_ENABLE=1, comandos /DETENER y /INICIAR (ver telegram_listener.py).
+Opcional: botón pánico Telegram — IA_TELEGRAM_PANIC_ENABLE=1, comandos /DETENER, /INICIAR, /STATUS, /BITACORA
+  (solo TELEGRAM_CHAT_ID; ver telegram_listener.py).
 Opcional: IA_AUTO_ALLOW_WINDOWS_SLEEP=1 — permitir suspensión en Windows (default: el bucle la inhibe mientras corre).
 Opcional — Fase 1 / cuenta real (PnL cerrado BOT_MAGIC, moneda de la cuenta):
   IA_AUTO_DAILY_PROFIT_TARGET_USD=45   — no abre nuevas órdenes si el PnL neto del día (cerrados) >= valor
@@ -443,6 +444,39 @@ def _send_status_telegram() -> None:
         print(f"[TG] /STATUS error: {e}", file=sys.stderr)
 
 
+def _send_bitacora_telegram() -> None:
+    """
+    Adjunta el CSV de bitácora (/BITACORA). Requiere IA_TELEGRAM_PANIC_ENABLE y credenciales Telegram.
+    """
+    try:
+        from telegram_utils import enviar_alerta_telegram, enviar_documento_telegram
+
+        from ia_trading_journal import journal_csv_absolute_path, journal_effective_tz, journal_enabled
+
+        p = journal_csv_absolute_path()
+        tz = journal_effective_tz()
+        if not p.is_file():
+            hint = ""
+            if not journal_enabled():
+                hint = (
+                    "\n<i>Tip:</i> activá <code>IA_JOURNAL_ENABLE=1</code> y dejá correr el bot "
+                    "al menos un ciclo para crear el CSV."
+                )
+            enviar_alerta_telegram(
+                f"<b>Bitácora</b>\nTodavía no existe <code>{p.name}</code> en disco.{hint}"
+            )
+            return
+        cap = f"Bitácora Fase 1 | TZ {tz} | {p.name}"
+        if enviar_documento_telegram(p, caption=cap[:1024]):
+            return
+        print("[TG] /BITACORA: sendDocument falló", file=sys.stderr)
+        enviar_alerta_telegram(
+            f"[TG] No se pudo adjuntar <code>{p.name}</code>. Revisá consola o tamaño del archivo."
+        )
+    except Exception as e:
+        print(f"[TG] /BITACORA error: {e}", file=sys.stderr)
+
+
 def aplicar_escucha_boton_panico_ia() -> None:
     """
     Polling Telegram (getUpdates). /DETENER desde TELEGRAM_CHAT_ID: opcional cerrar BOT_MAGIC + pausa ciclo.
@@ -459,6 +493,10 @@ def aplicar_escucha_boton_panico_ia() -> None:
 
     if cmd == "STATUS":
         _send_status_telegram()
+        return
+
+    if cmd == "BITACORA":
+        _send_bitacora_telegram()
         return
 
     if cmd == "STOP":

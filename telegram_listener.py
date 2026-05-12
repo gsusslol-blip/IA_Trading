@@ -8,6 +8,7 @@ Comandos (primer token del mensaje, mayúsculas ignoradas):
   /DETENER , /STOP , /PANIC — detener ciclo IA y opcional cerrar posiciones BOT_MAGIC.
   /INICIAR , /RESUME , /GO — reactivar ciclo tras pausa voluntaria.
   /STATUS — enviar estado (equity, posiciones abiertas y riesgo) por Telegram.
+  /BITACORA , /BITÁCORA , /JOURNAL — adjunta por Telegram el CSV de bitácora (IA_JOURNAL_CSV).
 
   IA_TELEGRAM_PANIC_TRUST_RESUME_START=1 — también reconoce /start como /INICIAR (cuidado: colisión
     con mensajes rutinarios al abrir el chat del bot).
@@ -134,6 +135,8 @@ def _comando_del_texto(raw: str) -> str | None:
         return "RESUME"
     if cmd in ("STATUS", "STATE"):
         return "STATUS"
+    if cmd in ("BITACORA", "BITÁCORA", "JOURNAL"):
+        return "BITACORA"
     if cmd == "START" and os.environ.get(
         "IA_TELEGRAM_PANIC_TRUST_RESUME_START", "0"
     ).strip().lower() in ("1", "true", "yes"):
@@ -146,7 +149,7 @@ _PRIMERA_VUELTA: bool = True
 
 def poll_telegram_panic_commands() -> str | None:
     """
-    Devuelve 'STOP', 'RESUME', 'STATUS' o None. Actualiza offset de Telegram tras cada llamada con resultados.
+    Devuelve 'STOP', 'RESUME', 'STATUS', 'BITACORA' o None. Actualiza offset de Telegram tras cada llamada con resultados.
 
     Consume backlog sólo ejecutando comandos si IA_TELEGRAM_PANIC_CONSUME_BACKLOG=1
     en la primera vuelta; si está en 0, la primera corrida sólo avanza el offset.

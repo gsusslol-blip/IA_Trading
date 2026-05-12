@@ -125,6 +125,11 @@ def journal_csv_filename() -> str:
     return _csv_path().name
 
 
+def journal_csv_absolute_path() -> Path:
+    """Ruta absoluta del CSV configurado (IA_JOURNAL_CSV)."""
+    return _csv_path().resolve()
+
+
 def _float_env(key: str, default: float) -> float:
     try:
         return float(os.environ.get(key, str(default)).replace(",", ".").strip() or str(default))
