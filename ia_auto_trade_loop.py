@@ -1581,8 +1581,17 @@ def main() -> None:
         else:
             telegram_report = tg_raw in ("1", "true", "yes")
 
+        acct_banner = "?"
+        try:
+            ac_b = mt5.account_info()
+            if ac_b is not None:
+                srv_b = str(getattr(ac_b, "server", "") or "")
+                acct_banner = "DEMO" if "DEMO" in srv_b.upper() else "REAL"
+        except Exception:
+            pass
+
         print(
-            f"Auto-trading DEMO | simbolos={len(resolved_map)} | intervalo={interval}s | "
+            f"Auto-trading ({acct_banner}) | simbolos={len(resolved_map)} | intervalo={interval}s | "
             f"cooldown tras orden={cooldown}s | multi/ronda={multi_per_round} | "
             f"burst={burst_delay}s | stack mismo simbolo={stack_same_symbol} | Ctrl+C salir"
             + (
