@@ -168,6 +168,7 @@ from trade_audit import (
 
 _IA_PAUSE_POR_COMANDO_TELEGRAM = False
 _LOCK_OWNED = False
+_LOCK_FILE_PATH: Path | None = None
 _IA_DAILY_LIMIT_NOTIFIED_DAY: str | None = None
 _IA_DAILY_LIMIT_NOTIFIED_TAG: str | None = None
 
@@ -689,10 +690,16 @@ def _single_instance_lock_path() -> Path:
 
 
 def _release_single_instance_lock() -> None:
-    global _LOCK_OWNED
+    global _LOCK_OWNED, _LOCK_FILE_PATH
     if not _LOCK_OWNED:
         return
-    path = _single_instance_lock_path()
+    path = _LOCK_FILE_PATH
+    if path is None:
+        try:
+            path = _single_instance_lock_path()
+        except NameError:
+            _LOCK_OWNED = False
+            return
     try:
         if path.is_file():
             parts = path.read_text(encoding="utf-8").strip().split()
@@ -701,10 +708,11 @@ def _release_single_instance_lock() -> None:
     except (OSError, ValueError):
         pass
     _LOCK_OWNED = False
+    _LOCK_FILE_PATH = None
 
 
 def _acquire_single_instance_lock() -> None:
-    global _LOCK_OWNED
+    global _LOCK_OWNED, _LOCK_FILE_PATH
     if os.environ.get("IA_AUTO_SINGLE_INSTANCE", "1").strip().lower() in ("0", "false", "no"):
         return
     path = _single_instance_lock_path()
@@ -721,6 +729,7 @@ def _acquire_single_instance_lock() -> None:
             finally:
                 os.close(fd)
             _LOCK_OWNED = True
+            _LOCK_FILE_PATH = path
             atexit.register(_release_single_instance_lock)
             return
         except FileExistsError:
