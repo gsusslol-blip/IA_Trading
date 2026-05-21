@@ -34,7 +34,6 @@ ia_auto_memory_state.json
 backup_safe*.zip
 
 # Datos de ejecución (no versionar; usar respaldo ZIP o export manual)
-watchdog.log
 bot_demo_log.csv
 ia_auto_trade_memory.csv
 scan_decisions.csv
@@ -45,3 +44,9 @@ ia_auto_trade_loop.lock
 ia_telegram_panic_offset.json
 execution_quality.csv
 ia_auto_trade_loop_runtime.log
+ia_phase1_journal.csv
+ia_trading_journal_state.json
+ia_phase1_journal_real.csv
+ia_trading_journal_state_real.json
+execution_quality_real.csv
+journal_backup/

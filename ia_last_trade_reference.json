@@ -1,0 +1,23 @@
+{
+  "saved_at_utc": "2026-05-11T22:50:53.342210+00:00",
+  "reference": "ultima_operacion_bot_magic",
+  "position_id": 56602254988,
+  "symbol": "XAUUSD",
+  "close_time_utc": "2026-05-11T20:00:08+00:00",
+  "close_time_local_note": "Ver consola Windows para hora local del PC",
+  "pnl_net_approx": 0.0,
+  "bot_magic": 260505,
+  "close_time_argentina": "2026-05-11T17:00:08-03:00",
+  "compare_tomorrow": {
+    "same_local_time_ba": "17:00",
+    "date_saved_for": "2026-05-11",
+    "note": "Manana a la misma hora (hora Argentina) comparar si el bot repite accion; el mercado no repite por reloj."
+  },
+  "close_time_windows_local": "2026-05-11T17:00:08-03:00",
+  "close_hhmm_windows_local": "17:00",
+  "chart_spike_candle_photo": {
+    "date_local": "2026-05-11",
+    "time_local_hhmm": "19:45",
+    "note": "Vela grande del grafico (foto MT5 M1 XAUUSD). Comparar manana ~19:45 si hay movimiento similar."
+  }
+}

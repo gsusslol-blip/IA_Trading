@@ -67,16 +67,19 @@ class Trade:
 
 
 def _max_drawdown(equity: list[float]) -> float:
+    """
+    Caída máxima respecto al máximo histórico de la curva acumulada, con base en 0 antes del 1er trade.
+    (Si el acumulado nunca supera 0, igual mide cuánto se hundió por debajo de 0 / del mejor nivel alcanzado.)
+    """
     if not equity:
         return 0.0
-    peak = equity[0]
+    peak = 0.0
     max_dd = 0.0
     for x in equity:
-        if x > peak:
-            peak = x
         dd = peak - x
         if dd > max_dd:
             max_dd = dd
+        peak = max(peak, x)
     return max_dd
 
 
@@ -91,9 +94,25 @@ def _sharpe_like(pnls: list[float]) -> float:
     return (mean / (var ** 0.5)) * (len(pnls) ** 0.5)
 
 
+def _max_drawdown_pct_vs_peak(equity: list[float]) -> float:
+    """
+    maxDD / mejor acumulado alcanzado (pico), en %.
+    Si el acumulado nunca supera 0, devuelve 0 (usar solo maxDD en puntos).
+    """
+    if not equity:
+        return 0.0
+    peak = 0.0
+    for x in equity:
+        peak = max(peak, x)
+    mk = _max_drawdown(equity)
+    if peak <= 1e-12:
+        return 0.0
+    return (mk / peak) * 100.0
+
+
 def metrics_ext(trades: list[Trade]) -> dict[str, float]:
     if not trades:
-        return {"n": 0.0, "net": 0.0, "wr": 0.0, "avg": 0.0, "max_dd": 0.0, "sharpe": 0.0, "pf": 0.0}
+        return {"n": 0.0, "net": 0.0, "wr": 0.0, "avg": 0.0, "max_dd": 0.0, "max_dd_pct_peak": 0.0, "sharpe": 0.0, "pf": 0.0}
     pnls = [t.pnl_points for t in trades]
     n = len(pnls)
     wins = [x for x in pnls if x > 0]
@@ -105,6 +124,7 @@ def metrics_ext(trades: list[Trade]) -> dict[str, float]:
         s += x
         eq.append(s)
     max_dd = _max_drawdown(eq)
+    dd_pct = _max_drawdown_pct_vs_peak(eq)
     pf = (sum(wins) / sum(losses)) if losses else (999.0 if wins else 0.0)
     return {
         "n": float(n),
@@ -112,6 +132,7 @@ def metrics_ext(trades: list[Trade]) -> dict[str, float]:
         "wr": float(len(wins) / n) if n else 0.0,
         "avg": float(net / n) if n else 0.0,
         "max_dd": float(max_dd),
+        "max_dd_pct_peak": float(dd_pct),
         "sharpe": float(_sharpe_like(pnls)),
         "pf": float(pf),
     }
@@ -532,12 +553,16 @@ def run_backtest(
 
 def _metrics(trades: list[Trade]) -> dict[str, float]:
     if not trades:
-        return {"n": 0, "net": 0.0, "wr": 0.0, "avg": 0.0}
-    pnls = [t.pnl_points for t in trades]
-    n = len(pnls)
-    wins = sum(1 for x in pnls if x > 0)
-    net = sum(pnls)
-    return {"n": float(n), "net": float(net), "wr": wins / n, "avg": net / n}
+        return {"n": 0, "net": 0.0, "wr": 0.0, "avg": 0.0, "max_dd": 0.0, "max_dd_pct_peak": 0.0}
+    m = metrics_ext(trades)
+    return {
+        "n": m["n"],
+        "net": m["net"],
+        "wr": m["wr"],
+        "avg": m["avg"],
+        "max_dd": m["max_dd"],
+        "max_dd_pct_peak": m["max_dd_pct_peak"],
+    }
 
 
 def main() -> None:
@@ -566,6 +591,8 @@ def main() -> None:
         fold = 0
         agg_net = 0.0
         agg_n = 0
+        all_test_trades: list[Trade] = []
+        all_test_trades_any: list[Trade] = []
         while True:
             train_from = cur
             train_to = _add_months(train_from, train_m)
@@ -576,16 +603,40 @@ def main() -> None:
             fold += 1
             # En esta versión, no "entrenamos" modelos; solo validamos regla con parámetros actuales.
             trades_test = backtest_window(symbol, train_to, test_to)
+            all_test_trades_any.extend(trades_test)
             m = _metrics(trades_test)
+            mx = metrics_ext(trades_test)
             n = int(m["n"])
             tag = "OK" if n >= min_trades else "POCOS"
-            print(f"fold {fold}: test {train_to.date()}..{test_to.date()} | n={n} | net={m['net']:+.2f} | wr={m['wr']*100:5.1f}% | {tag}")
+            print(
+                f"fold {fold}: test {train_to.date()}..{test_to.date()} | n={n} | net={m['net']:+.2f} pts | "
+                f"wr={m['wr']*100:5.1f}% | maxDD={mx['max_dd']:.2f} pts (~{mx['max_dd_pct_peak']:.1f}% vs pico curva) | {tag}"
+            )
             if n >= min_trades:
                 agg_net += float(m["net"])
                 agg_n += n
+                all_test_trades.extend(trades_test)
             cur = _add_months(cur, step_m)
 
-        print(f"TOTAL (solo folds con n>={min_trades}): trades={agg_n} | net={agg_net:+.2f} (puntos)")
+        print(f"TOTAL (solo folds con n>={min_trades}): trades={agg_n} | net={agg_net:+.2f} pts (precio acum.)")
+        if all_test_trades:
+            tot = metrics_ext(all_test_trades)
+            print(
+                f"DRAWDOWN agregado (todos los trades test OOS con n>={min_trades}): "
+                f"maxDD={tot['max_dd']:.2f} pts | ~{tot['max_dd_pct_peak']:.1f}% vs pico de curva acumulada | "
+                f"net={tot['net']:+.2f} pts | n={int(tot['n'])}"
+            )
+        if all_test_trades_any:
+            raw = metrics_ext(all_test_trades_any)
+            print(
+                f"RESUMEN sin umbral BT_MIN_TRADES (todos los trades test, muestra pequeña posible): "
+                f"n={int(raw['n'])} net={raw['net']:+.2f} pts | maxDD={raw['max_dd']:.2f} pts | "
+                f"~{raw['max_dd_pct_peak']:.1f}% vs pico curva"
+            )
+            print(
+                "Nota: maxDD está en *puntos de precio* del activo (misma unidad que entry-exit), "
+                "no en USD de cuenta. Para USD hace falta simular lotaje/fills del bróker."
+            )
     finally:
         mt5.shutdown()
 

@@ -5,14 +5,18 @@ Usa TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID (o TELEGRAM_TOKEN como alias del token
 URL correcta: https://api.telegram.org/bot<token>/sendMessage  (no telegram.org sin api.)
 
 Sin dependencia obligatoria de requests: usa urllib (mismo criterio que mt5_prices).
+
+sendDocument: `enviar_documento_telegram` (multipart/form-data) para adjuntos p. ej. CSV de bitácora.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import uuid
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 
 def _resolve_credentials(
@@ -77,6 +81,81 @@ def enviar_alerta_telegram(
         return False
     except Exception as e:
         print(f"[TG] Error enviando a Telegram: {e}")
+        return False
+
+
+def enviar_documento_telegram(
+    file_path: str | Path,
+    *,
+    caption: str | None = None,
+    token: str | None = None,
+    chat_id: str | None = None,
+) -> bool:
+    """
+    Envía un archivo con sendDocument. Caption texto plano (máx. 1024).
+    """
+    path = Path(file_path)
+    if not path.is_file():
+        print(f"[TG] sendDocument: no existe {path}")
+        return False
+    tok, cid = _resolve_credentials(token, chat_id)
+    if not tok or not cid:
+        return False
+
+    boundary = uuid.uuid4().hex.encode("ascii")
+    crlf = b"\r\n"
+    parts: list[bytes] = []
+
+    def add_field(name: str, value: str) -> None:
+        parts.append(b"--" + boundary + crlf)
+        parts.append(f'Content-Disposition: form-data; name="{name}"'.encode("utf-8") + crlf + crlf)
+        parts.append(value.encode("utf-8") + crlf)
+
+    add_field("chat_id", cid)
+    if caption:
+        add_field("caption", caption[:1024])
+
+    safe_name = path.name.replace('"', "_")[:200] or "document.csv"
+    try:
+        payload = path.read_bytes()
+    except OSError as e:
+        print(f"[TG] sendDocument: lectura {path}: {e}")
+        return False
+
+    parts.append(b"--" + boundary + crlf)
+    parts.append(
+        f'Content-Disposition: form-data; name="document"; filename="{safe_name}"'.encode("utf-8") + crlf
+    )
+    parts.append(b"Content-Type: text/csv; charset=utf-8" + crlf + crlf)
+    parts.append(payload + crlf)
+    parts.append(b"--" + boundary + b"--" + crlf)
+
+    body = b"".join(parts)
+    url = f"https://api.telegram.org/bot{tok}/sendDocument"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary.decode('ascii')}"},
+    )
+    try:
+        timeout = float(os.environ.get("TELEGRAM_TIMEOUT_S", "60").strip() or "60")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            if resp.status != 200:
+                print(f"[TG] sendDocument HTTP {resp.status}: {raw[:200]!r}")
+                return False
+            out = json.loads(raw.decode("utf-8"))
+            if not out.get("ok"):
+                print(f"[TG] sendDocument ok=false: {out!r}")
+                return False
+            return True
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        print(f"[TG] sendDocument HTTPError {e.code}: {err_body[:500]}")
+        return False
+    except Exception as e:
+        print(f"[TG] sendDocument: {e}")
         return False
 
 
