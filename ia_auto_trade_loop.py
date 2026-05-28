@@ -141,12 +141,12 @@ from ia_auto_expert import (
 )
 from cierre_viernes import gestionar_precierre_fin_de_semana
 from reporte_semanal import intentar_enviar_reporte_semanal_si_toca
-from telegram_listener import (
+from ia_remote_control import (
     cancelar_ordenes_pendientes_bot_panico,
     cerrar_posiciones_panico_ia_auto,
     poll_telegram_panic_commands,
 )
-from telegram_utils import enviar_alerta_telegram
+from ia_notifier import enviar_alerta_telegram, notify_mt5_trade_retcode_if_critical
 from mt5_prices import (
     BOT_MAGIC,
     mt5_copy_rates_from_pos_cached,
@@ -1575,10 +1575,15 @@ def enviar_orden(
             except Exception:
                 pass
             return True
+        comment = str(getattr(result, "comment", "") or "")
         print(
-            f"Rechazado filling={fm} retcode={retcode} comment={getattr(result, 'comment', '')}",
+            f"Rechazado filling={fm} retcode={retcode} comment={comment}",
             file=sys.stderr,
         )
+        try:
+            notify_mt5_trade_retcode_if_critical(simbolo, retcode, comment)
+        except Exception as e:
+            print(f"[TG] retcode: {e}", file=sys.stderr)
 
     return False
 

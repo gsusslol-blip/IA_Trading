@@ -1,0 +1,34 @@
+# Reglas de Proyecto: IA_Trading (Python + MetaTrader 5)
+
+## Mapa de módulos (raíz)
+- `ia_auto_trade_loop.py` — bucle principal auto-trading (MT5, noticias, régimen, órdenes).
+- `ia_scanner_loop.py` — señales M15/H4 (`analizar_ia`).
+- `ia_news_filter.py` — escudo macro (calendario XML, caché horaria).
+- `ia_remote_control.py` — pánico Telegram `/PANIC`, `/DETENER`, `/INICIAR`.
+- `ia_notifier.py` — alertas Telegram (`enviar_alerta_telegram`); implementación en `telegram_utils.py`.
+- `ia_mt5_normalize.py` — precios/volumen según `symbol_info`.
+- `ia_risk_manager.py` — lotaje dinámico y `validar_margen_disponible`.
+- `ia_mt5_connection.py` — reconexión MT5.
+- `local_env.py` — carga `.env` (nunca commitear `.env` con secretos).
+
+## Arquitectura y estilo
+- Python 3.10+; tipado donde aporte claridad.
+- Programación defensiva: validar que `mt5.copy_rates_from_pos`, `mt5.positions_get`, `mt5.account_info` no sean `None` antes de indexar.
+- Red: preferir `urllib.request` con `timeout` estricto (como `telegram_utils`, `ia_news_filter`). No introducir `asyncio` para MT5.
+- Cambios mínimos y acotados; seguir convenciones del archivo que editas.
+
+## Reglas de oro MT5
+1. **Normalización:** SL/TP/precios con `ia_mt5_normalize.normalizar_precio`; volumen con `normalizar_volumen` (respeta `volume_step`).
+2. **Filling:** usar `_allowed_filling_modes_symbol` / iterar modos compatibles del símbolo (no asumir IOC en todos los brókers).
+3. **Magic:** operaciones del bot con `BOT_MAGIC` desde `mt5_prices` / `.env`.
+
+## Errores críticos
+- Retcodes `10016` (stops inválidos) y `10019` (sin margen): notificar con `ia_notifier.notify_mt5_trade_retcode_if_critical` o `enviar_alerta_telegram`.
+- Si el usuario pide **envíame / mandame al telegram**: enviar de verdad vía proyecto (`load_env_file`, `ia_notifier` / `send_tg_preview.py`), no solo texto en el chat.
+
+## Variables de entorno frecuentes
+- Riesgo cartera: `IA_AUTO_MAX_TOTAL_RISK_PERCENT` (no `IA_MAX_TOTAL_RISK_PERCENT`).
+- Auto-trading: `IA_AUTO_ENABLE=1`, `IA_SCAN_SYMBOLS`, `BOT_MAGIC`.
+- Telegram: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+- Pánico: `IA_TELEGRAM_PANIC_ENABLE=1`.
+- Noticias: `IA_NEWS_FILTER_ENABLE=1`.
