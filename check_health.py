@@ -33,10 +33,9 @@ from mt5_prices import BOT_MAGIC, closed_positions_pnls_by_magic
 
 
 def _exec_quality_csv_path() -> Path:
-    root = Path(__file__).resolve().parent
-    name = os.environ.get("IA_EXEC_QUALITY_CSV", "").strip() or "execution_quality.csv"
-    p = Path(name)
-    return p if p.is_absolute() else (root / p)
+    from ia_paths import resolve_data_path
+
+    return resolve_data_path("IA_EXEC_QUALITY_CSV", "logs/execution_quality.csv")
 
 
 def _summarize_exec_csv(path: Path) -> None:

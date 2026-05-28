@@ -96,13 +96,21 @@ def loop_principal() -> None:
                 venta = (float(v_act["close"]) < float(v_ant["open"])) and sentimiento == "BAJISTA"
 
                 if vol_ok and compra:
-                    if enviar_orden(s, buy=True):
-                        enviar_alerta(f"Operación enviada COMPRA {requested} ({s})")
+                    sent = enviar_orden(s, buy=True)
+                    if sent:
+                        if sent == "pending":
+                            enviar_alerta(f"Límite COMPRA colocada {requested} ({s})")
+                        else:
+                            enviar_alerta(f"Operación enviada COMPRA {requested} ({s})")
                         time.sleep(cooldown)
                         break
                 elif vol_ok and venta:
-                    if enviar_orden(s, buy=False):
-                        enviar_alerta(f"Operación enviada VENTA {requested} ({s})")
+                    sent = enviar_orden(s, buy=False)
+                    if sent:
+                        if sent == "pending":
+                            enviar_alerta(f"Límite VENTA colocada {requested} ({s})")
+                        else:
+                            enviar_alerta(f"Operación enviada VENTA {requested} ({s})")
                         time.sleep(cooldown)
                         break
             time.sleep(interval)

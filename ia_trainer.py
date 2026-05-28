@@ -3,6 +3,10 @@ Entrena el clasificador ML (RandomForest) desde ``trade_audit_ml.csv``.
 
   python ia_trainer.py
 
+Optimización de parámetros (Sharpe / Optuna fin de semana): ``ia_auto_optimizer.py`` +
+``optuna_walkforward.py`` con ``IA_OPTUNA_OBJECTIVE=sharpe`` (ver ``ia_optuna_sharpe.py``).
+Este módulo entrena el filtro ML; no confundir con el estudio Optuna de la estrategia.
+
 Variables:
   IA_ML_TRAIN_AUTO_ENABLE=1
   IA_ML_TRAIN_WEEKDAY=6          # 0=lun … 6=dom (default domingo tras semana demo)

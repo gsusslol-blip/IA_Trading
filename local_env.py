@@ -22,6 +22,7 @@ def load_env_file(path: str | None = None) -> None:
         paths = []
         if env_override:
             paths.append(env_override)
+        paths.append(str(here / "config" / ".env"))
         paths.append(str(here / ".env"))
         paths.append(".env")
 

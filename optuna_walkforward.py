@@ -257,7 +257,12 @@ def objective_train_fold(
         dd = float(m["max_dd"])
         sharpe = float(m["sharpe"])
         pf = float(m["pf"])
-        value = _composite_score(net, dd, n, sharpe, pf=pf)
+        from ia_optuna_sharpe import objetivo_sharpe_desde_metricas, optuna_objective_mode
+
+        if optuna_objective_mode() == "sharpe":
+            value = objetivo_sharpe_desde_metricas(trades, m)
+        else:
+            value = _composite_score(net, dd, n, sharpe, pf=pf)
         trial.report(value, step=0)
         return value
     except optuna.TrialPruned:
@@ -280,8 +285,14 @@ def objective_joint_folds(
         total_n = 0
         sharpe_sum = 0.0
         pf_weighted = 0.0
+        from ia_optuna_sharpe import optuna_objective_mode
+
+        sharpe_mode = optuna_objective_mode() == "sharpe"
+        all_trades: list[Any] = []
         for i, (_train_from, train_to, test_to) in enumerate(windows):
             trades = run_backtest(symbol, train_to, test_to, params)
+            if sharpe_mode:
+                all_trades.extend(trades)
             m = metrics_ext(trades)
             n_i = int(m["n"])
             total_n += n_i
@@ -295,6 +306,12 @@ def objective_joint_folds(
             if trial.should_prune():
                 raise optuna.TrialPruned()
         pf_avg = (pf_weighted / total_n) if total_n > 0 else 1.0
+
+        if sharpe_mode:
+            m_agg = metrics_ext(all_trades)
+            from ia_optuna_sharpe import objetivo_sharpe_desde_metricas
+
+            return objetivo_sharpe_desde_metricas(all_trades, m_agg)
         return _composite_score(total_net, total_dd, total_n, sharpe_sum, pf=pf_avg)
     except optuna.TrialPruned:
         raise

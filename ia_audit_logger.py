@@ -18,8 +18,8 @@ from typing import Any
 
 import MetaTrader5 as mt5
 
-from ia_intelligence_layer import build_live_features
-from mt5_prices import BOT_MAGIC, spread_points_from_tick
+from ia_indicators import obtener_snapshot_completo
+from mt5_prices import BOT_MAGIC
 
 _CSV_HEADERS = [
     "position_id",
@@ -45,17 +45,15 @@ def audit_enabled() -> bool:
 
 
 def audit_csv_path() -> Path:
-    root = Path(__file__).resolve().parent
-    name = os.environ.get("IA_ML_AUDIT_CSV", "trade_audit_ml.csv").strip() or "trade_audit_ml.csv"
-    p = Path(name)
-    return p if p.is_absolute() else root / p
+    from ia_paths import resolve_data_path
+
+    return resolve_data_path("IA_ML_AUDIT_CSV", "logs/trade_audit_ml.csv")
 
 
 def _pending_path() -> Path:
-    root = Path(__file__).resolve().parent
-    name = os.environ.get("IA_ML_AUDIT_PENDING", "ia_audit_pending.json").strip() or "ia_audit_pending.json"
-    p = Path(name)
-    return p if p.is_absolute() else root / p
+    from ia_paths import resolve_data_path
+
+    return resolve_data_path("IA_ML_AUDIT_PENDING", "logs/ia_audit_pending.json")
 
 
 def _written_state_path() -> Path:
@@ -114,15 +112,8 @@ def _save_written_ids(ids: set[str]) -> None:
 
 
 def capturar_metricas_mercado(symbol: str, *, buy: bool) -> dict[str, float]:
-    """Foto de mercado alineada con ``build_live_features``."""
-    feats = build_live_features(symbol, buy=buy)
-    return {
-        "spread_pts": float(feats[0]),
-        "hora_utc": float(feats[1]),
-        "adx_m15": float(feats[2]),
-        "distancia_ema_h4": float(feats[3]),
-        "atr_m15_pct": float(feats[4]),
-    }
+    """Foto de mercado vía ``ia_indicators.obtener_snapshot_completo``."""
+    return obtener_snapshot_completo(symbol, buy=buy)
 
 
 def _position_id_from_deal(deal_ticket: int) -> int | None:
@@ -289,6 +280,70 @@ def registrar_cierre_trade(position_id: int, *, magic: int | None = None) -> boo
     return True
 
 
+def limpiar_pending_huerfanos(magic: int | None = None) -> int:
+    """
+    Elimina entradas de ``ia_audit_pending.json`` sin posición abierta ni cierre reciente.
+
+    Variables: ``IA_AUDIT_PENDING_MAX_AGE_H`` (default 72).
+    """
+    if not audit_enabled():
+        return 0
+    try:
+        max_h = float(os.environ.get("IA_AUDIT_PENDING_MAX_AGE_H", "72").strip() or "72")
+    except ValueError:
+        max_h = 72.0
+    max_h = max(1.0, max_h)
+
+    mag = int(magic if magic is not None else BOT_MAGIC)
+    pending = _load_pending()
+    if not pending:
+        return 0
+
+    open_ids: set[str] = set()
+    for p in mt5.positions_get() or []:
+        if int(getattr(p, "magic", -1) or -1) != mag:
+            continue
+        open_ids.add(str(int(getattr(p, "ticket", 0) or 0)))
+
+    now = datetime.now(timezone.utc)
+    removed = 0
+    for pid_s, snap in list(pending.items()):
+        if pid_s in open_ids:
+            continue
+        age_ok = False
+        t_open = str(snap.get("time_open_utc", "") or "")
+        if t_open:
+            try:
+                dt = datetime.fromisoformat(t_open.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age_h = (now - dt).total_seconds() / 3600.0
+                age_ok = age_h > max_h
+            except (TypeError, ValueError):
+                age_ok = True
+        else:
+            age_ok = True
+
+        if not age_ok:
+            continue
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            pending.pop(pid_s, None)
+            removed += 1
+            continue
+        if registrar_cierre_trade(pid, magic=mag):
+            removed += 1
+        else:
+            pending.pop(pid_s, None)
+            removed += 1
+
+    if removed:
+        _save_pending(pending)
+        print(f"[audit] Limpiados {removed} pending huérfano(s).", flush=True)
+    return removed
+
+
 def procesar_cierres_audit(magic: int | None = None) -> int:
     """
     Detecta posiciones cerradas (ya no en ``positions_get``) con snapshot pendiente
@@ -297,6 +352,10 @@ def procesar_cierres_audit(magic: int | None = None) -> int:
     if not audit_enabled():
         return 0
     mag = int(magic if magic is not None else BOT_MAGIC)
+    try:
+        limpiar_pending_huerfanos(mag)
+    except Exception:
+        pass
     pending = _load_pending()
     if not pending:
         return 0

@@ -37,7 +37,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -603,6 +603,43 @@ def analizar_ia(
     v_trigger = df_m15.iloc[i_tr]
     v_previa = df_m15.iloc[i_pr]
 
+    if live_no_replay:
+        from ia_profitability_filters import validar_ventana_alta_rentabilidad
+
+        ok_prof, why_prof = validar_ventana_alta_rentabilidad(simbolo)
+        if not ok_prof:
+            if _filtros_debug_activos():
+                log_filtro_descarte(
+                    "VENTANA_RENTABILIDAD",
+                    why_prof,
+                    "sesion UTC Londres/NY + spread",
+                    simbolo=simbolo,
+                )
+            return "Sin señal clara"
+    else:
+        try:
+            from ia_profitability_filters import _enabled as profit_filter_on
+            from ia_profitability_filters import sesion_utc_alta_rentabilidad
+
+            if profit_filter_on():
+                t_raw = v_trigger["time"] if "time" in v_trigger else None
+                if t_raw is not None and not pd.isna(t_raw):
+                    ts = int(t_raw)
+                    if ts > 10_000_000_000:
+                        ts //= 1000
+                    h_bar = datetime.fromtimestamp(ts, tz=timezone.utc).hour
+                    if not sesion_utc_alta_rentabilidad(h_bar):
+                        if _filtros_debug_activos():
+                            log_filtro_descarte(
+                                "VENTANA_RENTABILIDAD",
+                                f"replay UTC h={h_bar}",
+                                "sesion Londres/NY",
+                                simbolo=simbolo,
+                            )
+                        return "Sin señal clara"
+        except Exception:
+            pass
+
     vol_roll_bars = _scan_cfg_int(
         cfg, "vol_roll_bars", "IA_SCAN_VOL_ROLL_BARS", default=0, lo=0, hi=250
     )
@@ -676,6 +713,101 @@ def analizar_ia(
             )
             log_filtro_descarte("GATILLO_M15_H4", st, "patron+vol+H4 alineados", simbolo=simbolo)
         return "Sin señal clara"
+
+    d1_hl: tuple[float, float] | None = None
+    try:
+        from ia_liquidity_zones import d1_liquidity_enabled
+        from ia_microstructure import (
+            microestructura_permite_entrada,
+            microstructure_applies,
+            stop_hunt_enabled,
+        )
+
+        need_d1 = d1_liquidity_enabled() or (
+            microstructure_applies(simbolo) and stop_hunt_enabled()
+        )
+        if need_d1:
+            from ia_d1_levels import high_low_ayer_d1
+
+            d1_hl = high_low_ayer_d1(simbolo)
+
+        if microstructure_applies(simbolo):
+            ref_unix = None
+            t_raw = v_trigger["time"] if "time" in v_trigger else None
+            if t_raw is not None and not pd.isna(t_raw):
+                ref_unix = int(t_raw)
+                if ref_unix > 10_000_000_000:
+                    ref_unix //= 1000
+            utc_h = utc_m = None
+            if ref_unix is not None:
+                dt_u = datetime.fromtimestamp(ref_unix, tz=timezone.utc)
+                utc_h, utc_m = dt_u.hour, dt_u.minute
+            alto_d1 = bajo_d1 = None
+            if d1_hl is not None:
+                alto_d1, bajo_d1 = d1_hl
+            ok_ms, why_ms = microestructura_permite_entrada(
+                simbolo,
+                base,
+                float(v_trigger["close"]),
+                df_m15=df_m15 if not live_no_replay else None,
+                ref_bar_unix=ref_unix,
+                utc_hour=utc_h,
+                utc_minute=utc_m,
+                alto_ayer=alto_d1,
+                bajo_ayer=bajo_d1,
+            )
+            if not ok_ms:
+                if _filtros_debug_activos():
+                    log_filtro_descarte(
+                        "MICROESTRUCTURA",
+                        why_ms,
+                        "barrido liquidez + gold fixing",
+                        simbolo=simbolo,
+                    )
+                return "Sin señal clara"
+    except Exception as e:
+        if _filtros_debug_activos():
+            print(f"[micro] {e}", file=sys.stderr)
+
+    try:
+        from ia_liquidity_zones import d1_liquidity_enabled, verificar_proximidad_liquidez_diaria
+
+        if d1_liquidity_enabled():
+            px_trig = float(v_trigger["close"])
+            atr_m15 = abs(float(v_trigger["high"]) - float(v_trigger["low"]))
+            if atr_m15 <= 0:
+                atr_m15 = abs(px_trig - float(v_trigger["open"]))
+            if live_no_replay:
+                try:
+                    from ia_auto_expert import m15_atr_last_closed
+
+                    atr_live = m15_atr_last_closed(simbolo)
+                    if atr_live is not None and atr_live > 0:
+                        atr_m15 = float(atr_live)
+                except Exception:
+                    pass
+            alto_d1 = bajo_d1 = None
+            if d1_hl is not None:
+                alto_d1, bajo_d1 = d1_hl
+            ok_z, why_z = verificar_proximidad_liquidez_diaria(
+                simbolo,
+                px_trig,
+                atr_m15,
+                high_ayer=alto_d1,
+                bajo_ayer=bajo_d1,
+            )
+            if not ok_z:
+                if _filtros_debug_activos():
+                    log_filtro_descarte(
+                        "D1_LIQUIDIDAD",
+                        why_z,
+                        "cerca high/low ayer",
+                        simbolo=simbolo,
+                    )
+                return "Sin señal clara"
+    except Exception as e:
+        if _filtros_debug_activos():
+            print(f"[d1_liq] {e}", file=sys.stderr)
 
     if os.environ.get("IA_H4_EMA_ALIGN_ENABLE", "0").strip().lower() in ("1", "true", "yes"):
         try:

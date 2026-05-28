@@ -178,14 +178,26 @@ def main() -> None:
 
                 sig = analizar_ia(sym)
                 if "COMPRA CONFIRMADA" in sig:
-                    if enviar_orden(sym, buy=True):
-                        enviar_alerta_movil(f"IA: COMPRA ejecutada {requested} ({sym})")
+                    sent = enviar_orden(sym, buy=True)
+                    if sent:
+                        msg = (
+                            f"IA: COMPRA límite colocada {requested} ({sym})"
+                            if sent == "pending"
+                            else f"IA: COMPRA ejecutada {requested} ({sym})"
+                        )
+                        enviar_alerta_movil(msg)
                         traded = True
                         time.sleep(cooldown)
                         break
                 elif "VENTA CONFIRMADA" in sig:
-                    if enviar_orden(sym, buy=False):
-                        enviar_alerta_movil(f"IA: VENTA ejecutada {requested} ({sym})")
+                    sent = enviar_orden(sym, buy=False)
+                    if sent:
+                        msg = (
+                            f"IA: VENTA límite colocada {requested} ({sym})"
+                            if sent == "pending"
+                            else f"IA: VENTA ejecutada {requested} ({sym})"
+                        )
+                        enviar_alerta_movil(msg)
                         traded = True
                         time.sleep(cooldown)
                         break

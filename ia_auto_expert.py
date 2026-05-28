@@ -21,6 +21,8 @@ from ia_mt5_normalize import normalizar_precio
 
 
 _LAST_M15_MANAGED_CLOSE_TS: dict[str, int] = {}
+_TP_LOCK_LAST_ATTEMPT: dict[int, float] = {}
+_TP_LOCK_DONE: set[int] = set()
 
 # Cache DXY para enviar_orden (sin recalcular en hot path).
 _DXY_GOLD_BLOCK_CACHE: bool = False
@@ -376,6 +378,148 @@ def gestionar_trailing_autonomo(
     )
 
 
+def _tp_lock_enabled() -> bool:
+    return os.environ.get("IA_TP_LOCK_ENABLE", "1").strip().lower() in ("1", "true", "yes")
+
+
+def _tp_lock_progress() -> float:
+    try:
+        v = float(os.environ.get("IA_TP_LOCK_PROGRESS", "0.70").strip() or "0.70")
+    except ValueError:
+        v = 0.70
+    return max(0.50, min(0.95, v))
+
+
+def _tp_lock_sl_fraction() -> float:
+    try:
+        v = float(os.environ.get("IA_TP_LOCK_SL_FRACTION", "0.50").strip() or "0.50")
+    except ValueError:
+        v = 0.50
+    return max(0.10, min(0.90, v))
+
+
+def _tp_lock_interval_s() -> float:
+    try:
+        return max(5.0, float(os.environ.get("IA_TP_LOCK_INTERVAL_S", "30").strip() or "30"))
+    except ValueError:
+        return 30.0
+
+
+def gestionar_salida_rentable(position) -> bool:
+    """
+    Al recorrer ~70% del camino al TP, mueve SL para asegurar ~50% del recorrido objetivo (lock parcial).
+
+    Usa precio actual de la posición; requiere TP > 0. No empeora un SL ya más favorable.
+    """
+    if not _tp_lock_enabled():
+        return False
+
+    sym = str(getattr(position, "symbol", "") or "")
+    info = mt5.symbol_info(sym)
+    if info is None:
+        return False
+    point = float(getattr(info, "point", 0.0) or 0.0)
+    if point <= 0:
+        return False
+
+    typ = int(getattr(position, "type", -1))
+    ticket = int(getattr(position, "ticket", 0) or 0)
+    vol = float(getattr(position, "volume", 0.0) or 0.0)
+    entry = float(getattr(position, "price_open", 0.0) or 0.0)
+    tp = float(getattr(position, "tp", 0.0) or 0.0)
+    cur_sl = float(getattr(position, "sl", 0.0) or 0.0)
+    px = float(getattr(position, "price_current", 0.0) or 0.0)
+
+    if ticket <= 0 or entry <= 0 or tp <= 0 or px <= 0:
+        return False
+    if ticket in _TP_LOCK_DONE:
+        return False
+
+    now_mono = time.time()
+    last_try = _TP_LOCK_LAST_ATTEMPT.get(ticket, 0.0)
+    if now_mono - last_try < _tp_lock_interval_s():
+        return False
+    _TP_LOCK_LAST_ATTEMPT[ticket] = now_mono
+
+    dist_tp = abs(tp - entry)
+    if dist_tp <= point:
+        return False
+
+    progress = _tp_lock_progress()
+    lock_frac = _tp_lock_sl_fraction()
+
+    tick = mt5.symbol_info_tick(sym)
+    if tick is None:
+        return False
+    bid = float(getattr(tick, "bid", 0.0) or 0.0)
+    ask = float(getattr(tick, "ask", 0.0) or 0.0)
+    ref_px = bid if typ == mt5.POSITION_TYPE_BUY else ask
+    if ref_px <= 0:
+        ref_px = px
+    stops_level = int(getattr(info, "trade_stops_level", 0) or 0)
+
+    new_sl: float | None = None
+    if typ == mt5.POSITION_TYPE_BUY:
+        traveled = px - entry
+        if traveled < dist_tp * progress:
+            return False
+        candidate = entry + dist_tp * lock_frac
+        if candidate > cur_sl + point * 0.25:
+            new_sl = candidate
+    elif typ == mt5.POSITION_TYPE_SELL:
+        traveled = entry - px
+        if traveled < dist_tp * progress:
+            return False
+        candidate = entry - dist_tp * lock_frac
+        if cur_sl == 0 or candidate < cur_sl - point * 0.25:
+            new_sl = candidate
+    else:
+        return False
+
+    if new_sl is None:
+        return False
+
+    sl_norm = normalizar_precio(sym, float(new_sl), info=info)
+    if sl_norm is None:
+        return False
+    if not _sl_respects_stops_level(
+        typ=typ,
+        ref_price=ref_px,
+        new_sl=sl_norm,
+        point=point,
+        stops_level=stops_level,
+    ):
+        return False
+
+    req = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "position": ticket,
+        "symbol": sym,
+        "volume": vol,
+        "sl": sl_norm,
+        "tp": tp,
+    }
+    try:
+        from ia_order_async import modify_sltp_tracked
+
+        status, r = modify_sltp_tracked(req, position_ticket=ticket)
+    except Exception:
+        r = mt5.order_send(req)
+        status = "done" if r is not None and int(getattr(r, "retcode", -1)) == mt5.TRADE_RETCODE_DONE else "failed"
+
+    if status == "deferred":
+        return False
+    if status == "done":
+        _TP_LOCK_DONE.add(ticket)
+        print(
+            f"[tp_lock] {sym} ticket={ticket} SL→{sl_norm} "
+            f"(progreso>={progress:.0%} hacia TP, lock {lock_frac:.0%} del objetivo)",
+            flush=True,
+        )
+        return True
+    return False
+
+
 def manage_position_expert(
     position,
     *,
@@ -455,14 +599,25 @@ def manage_position_expert(
         else:
             be_threshold = risk * be_trigger_rr
         if fav >= be_threshold:
+            try:
+                from ia_fee_detector import precio_breakeven_ajustado
+
+                be_sl = precio_breakeven_ajustado(
+                    sym,
+                    buy=(typ == mt5.POSITION_TYPE_BUY),
+                    entry_price=op,
+                    volume=vol,
+                    buffer_price=buf,
+                    info=info,
+                )
+            except Exception:
+                be_sl = (op + buf) if typ == mt5.POSITION_TYPE_BUY else (op - buf)
             if typ == mt5.POSITION_TYPE_BUY:
-                be_sl = op + buf
                 if be_sl > cur_sl + point * 0.25:
                     new_sl = max(new_sl, be_sl)
                     changed = True
                     be_changed = True
             elif typ == mt5.POSITION_TYPE_SELL:
-                be_sl = op - buf
                 if cur_sl == 0 or be_sl < cur_sl - point * 0.25:
                     new_sl = min(cur_sl if cur_sl > 0 else 1e12, be_sl)
                     changed = True
@@ -517,13 +672,19 @@ def manage_position_expert(
         "sl": new_sl,
         "tp": cur_tp,
     }
-    r = mt5.order_send(req)
-    if r is None:
-        return False
-    rc = int(getattr(r, "retcode", -1))
-    if rc == mt5.TRADE_RETCODE_DONE:
-        return True
-    return False
+    try:
+        from ia_order_async import modify_sltp_tracked
+
+        status, _r = modify_sltp_tracked(req, position_ticket=ticket)
+        if status == "deferred":
+            return False
+        return status == "done"
+    except Exception:
+        r = mt5.order_send(req)
+        if r is None:
+            return False
+        rc = int(getattr(r, "retcode", -1))
+        return rc == mt5.TRADE_RETCODE_DONE
 
 
 def gestionar_posiciones_activas(symbols: list[str]) -> None:
@@ -532,9 +693,23 @@ def gestionar_posiciones_activas(symbols: list[str]) -> None:
 
 
 def manage_all_bot_positions_expert(symbols: list[str]) -> None:
-    """Recorre posiciones BOT_MAGIC en symbols y aplica BE/trailing **solo en cierre M15**."""
+    """Recorre posiciones BOT_MAGIC: lock TP (cada ciclo) y BE/trailing en cierre M15."""
+    try:
+        from ia_order_async import sync_deferred_mt5_states
+
+        sync_deferred_mt5_states(BOT_MAGIC, symbols)
+    except Exception:
+        pass
+    try:
+        from ia_audit_logger import limpiar_pending_huerfanos
+
+        limpiar_pending_huerfanos(BOT_MAGIC)
+    except Exception:
+        pass
+
     be_on = os.environ.get("IA_BE_ENABLE", "0").strip().lower() in ("1", "true", "yes")
-    if not be_on and not _tp_mode_trailing():
+    tp_lock_on = _tp_lock_enabled()
+    if not be_on and not _tp_mode_trailing() and not tp_lock_on:
         return
     try:
         atr_period = int(os.environ.get("IA_AUTO_ATR_PERIOD", "14").strip() or "14")
@@ -554,6 +729,19 @@ def manage_all_bot_positions_expert(symbols: list[str]) -> None:
     if not pos_list:
         return
     sym_set = set(symbols)
+
+    if tp_lock_on:
+        for p in pos_list:
+            if int(getattr(p, "magic", -1) or -1) != BOT_MAGIC:
+                continue
+            s = str(getattr(p, "symbol", "") or "")
+            if not s or s not in sym_set:
+                continue
+            try:
+                gestionar_salida_rentable(p)
+            except Exception:
+                pass
+
     # Agrupar por símbolo para calcular trigger una sola vez por M15 cerrado.
     by_sym: dict[str, list] = {}
     for p in pos_list:

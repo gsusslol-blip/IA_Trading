@@ -1,5 +1,21 @@
 # Reglas de Proyecto: IA_Trading (Python + MetaTrader 5)
 
+## Carpetas de datos
+- `logs/` — `trade_audit_ml.csv`, `execution_quality.csv` (defaults vía `ia_paths.py`).
+- `config/` — `.env` opcional, `settings.json`.
+- `ARCHITECTURE.md` — mapa lógico core / trading / execution (`.py` en raíz por compatibilidad).
+- VPS: arrancar con `ia_watchdog.bat` (reinicio + Telegram vía `watchdog_notify.py`).
+- `ia_welcome.py` — reporte de bienvenida/diagnóstico al arranque (una vez por proceso).
+- `ia_profitability_filters.py` — ventana Londres/NY UTC + spread (antes del gatillo M15).
+- `ia_auto_expert.gestionar_salida_rentable` — lock SL al 70% del camino al TP.
+- `ia_optuna_sharpe.py` — objetivo Optuna Sharpe (`IA_OPTUNA_OBJECTIVE=sharpe`).
+- `ia_order_execution.py` — prioridad ORDER_FILLING (oro: IOC primero).
+- `ia_limit_entry.py` — BUY/SELL LIMIT con expiración M15 (`IA_LIMIT_ENTRY_ENABLE`).
+- `ia_liquidity_zones.py` — filtro high/low día anterior (`IA_D1_LIQUIDITY_ENABLE`).
+- `ia_fee_detector.py` — comisión por lote y BE real (`IA_FEE_BE_ENABLE`).
+- `ia_order_cleaner.py` — cancela límites vencidas cada ciclo.
+- `ia_microstructure.py` — stop hunt D1 + ventana Gold Fixing UTC (`IA_STOP_HUNT_ENABLE`, `IA_GOLD_FIXING_ENABLE`).
+
 ## Mapa de módulos (raíz)
 - `ia_auto_trade_loop.py` — bucle principal auto-trading (MT5, noticias, régimen, órdenes).
 - `ia_scanner_loop.py` — señales M15/H4 (`analizar_ia`).
@@ -11,6 +27,9 @@
 - `ia_mt5_connection.py` — reconexión MT5.
 - `ia_auto_optimizer.py` — Optuna fin de semana → `params_optimized.json`.
 - `ia_intelligence_layer.py` — filtro ML + auto-tune spread por `execution_quality.csv`.
+- `ia_indicators.py` — ADX M15, distancia EMA H4, ATR pctl (caché MT5).
+- `ia_gold_risk.py` — lotaje XAU por contract_size + apalancamiento.
+- `ia_filesystem.py` — carpetas/CSV al arranque del bucle auto.
 - `ia_audit_logger.py` — dataset ML (métricas en apertura, resultado en cierre).
 - `ia_trainer.py` — entrena `modelos/filtro_falsos_rompimientos.pkl` desde `trade_audit_ml.csv`.
 - `local_env.py` — carga `.env` (nunca commitear `.env` con secretos).

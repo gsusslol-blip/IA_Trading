@@ -8,11 +8,17 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 
 import MetaTrader5 as mt5
 
+from ia_asset_profile import AssetClass, classify_trade_symbol
 from ia_mt5_normalize import normalizar_volumen
 from mt5_prices import BOT_MAGIC, _allowed_filling_modes_symbol
+
+
+def _gold_risk_enabled() -> bool:
+    return os.environ.get("IA_GOLD_RISK_ENABLE", "1").strip().lower() in ("1", "true", "yes")
 
 
 def _round_down_to_step(value: float, step: float) -> float:
@@ -51,6 +57,23 @@ def calcular_lotaje_dinamico(
         return None
     if ep <= 0 or sp <= 0:
         return None
+
+    if _gold_risk_enabled() and classify_trade_symbol(symbol) == AssetClass.GOLD:
+        try:
+            from ia_gold_risk import calcular_lotaje_oro_institucional
+
+            vol_gold = calcular_lotaje_oro_institucional(
+                symbol,
+                ep,
+                sp,
+                rp,
+                use_equity=use_equity,
+                info=info,
+            )
+            if vol_gold and vol_gold > 0:
+                return float(vol_gold)
+        except Exception as e:
+            print(f"[risk] lotaje oro fallback order_calc_profit: {e}", file=sys.stderr)
 
     acct = mt5.account_info()
     if acct is None:

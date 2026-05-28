@@ -14,14 +14,10 @@ Variables:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import MetaTrader5 as mt5
-
-from market_regime import _adx_last, _atr_series, _percentile_rank, _true_ranges, fetch_rates
-from mt5_prices import spread_points_from_tick
+from ia_indicators import obtener_snapshot_completo
 from trade_audit import execution_quality_csv_path
 
 
@@ -46,48 +42,14 @@ def build_live_features(symbol: str, *, buy: bool) -> list[float]:
     """
     Features alineadas al entrenamiento: spread_pts, hora_utc, adx_m15, dist_ema_h4_pct, atr_pct_rank.
     """
-    sp = spread_points_from_tick(symbol)
-    spread_pts = float(sp) if sp is not None else 0.0
-    now = datetime.now(timezone.utc)
-    hour_utc = now.hour + now.minute / 60.0
-
-    adx_v = 0.0
-    atr_pct = 0.0
-    ema_dist_pct = 0.0
-    try:
-        pack = fetch_rates(symbol, mt5.TIMEFRAME_M15, 120)
-        if pack is not None:
-            highs, lows, closes = pack
-            if len(closes) >= 50:
-                adx = _adx_last(highs, lows, closes, period=14)
-                adx_v = float(adx) if adx is not None else 0.0
-                trs = _true_ranges(highs, lows, closes)
-                atr_ser = _atr_series(trs, 14)
-                if atr_ser and closes[-1]:
-                    cur = (atr_ser[-1] / float(closes[-1])) * 100.0
-                    hist = [
-                        (atr_ser[i] / closes[i + 1]) * 100.0
-                        for i in range(len(atr_ser) - 1)
-                        if closes[i + 1]
-                    ]
-                    if hist:
-                        pctl = _percentile_rank(cur, hist[-80:])
-                        atr_pct = float(pctl) if pctl is not None else 0.0
-        pack_h4 = fetch_rates(symbol, mt5.TIMEFRAME_H4, 80)
-        if pack_h4 is not None:
-            _h, _l, closes_h4 = pack_h4
-            if len(closes_h4) >= 25:
-                ema = sum(closes_h4[-20:]) / 20.0
-                px = float(closes_h4[-1])
-                if ema > 0:
-                    ema_dist_pct = ((px - ema) / ema) * 100.0
-                    if not buy:
-                        ema_dist_pct = -ema_dist_pct
-    except Exception:
-        pass
-
-    side_sign = 1.0 if buy else -1.0
-    return [spread_pts, hour_utc, adx_v, ema_dist_pct * side_sign, atr_pct]
+    snap = obtener_snapshot_completo(symbol, buy=buy)
+    return [
+        float(snap["spread_pts"]),
+        float(snap["hora_utc"]),
+        float(snap["adx_m15"]),
+        float(snap["distancia_ema_h4"]),
+        float(snap["atr_m15_pct"]),
+    ]
 
 
 def filtro_inteligencia_artificial(features_mercado: list[float] | None = None) -> bool:

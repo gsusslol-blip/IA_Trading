@@ -1349,13 +1349,18 @@ def _bot_position_tickets(symbol: str, magic: int = BOT_MAGIC) -> list[int]:
 
 
 def _allowed_filling_modes_symbol(symbol: str) -> list[int]:
-    info = mt5.symbol_info(symbol)
-    if info is None:
-        return [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC]
-    mask = int(getattr(info, "filling_mode", 0) or 0)
-    modes = [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]
-    allowed = [m for m in modes if mask & (1 << m)]
-    return allowed if allowed else [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC]
+    try:
+        from ia_order_execution import prioridad_filling_modes
+
+        return prioridad_filling_modes(symbol)
+    except Exception:
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            return [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC]
+        mask = int(getattr(info, "filling_mode", 0) or 0)
+        modes = [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]
+        allowed = [m for m in modes if mask & (1 << m)]
+        return allowed if allowed else [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC]
 
 
 def spread_points_from_tick(symbol: str) -> int | None:

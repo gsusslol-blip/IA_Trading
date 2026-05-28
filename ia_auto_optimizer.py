@@ -1,8 +1,8 @@
 """
 Auto-optimización Optuna (fin de semana o manual).
 
-Reutiliza el backtest y el objetivo de ``optuna_walkforward.py``; escribe
-``params_optimized.json`` para que ``ia_auto_trade_loop`` lo aplique vía ``IA_OPTUNA_APPLY``.
+Walk-forward real: entrena Optuna en el 70% inicial del histórico y valida Sharpe en el
+30% OOS antes de escribir ``params_optimized.json``.
 
 Uso:
   python ia_auto_optimizer.py
@@ -13,7 +13,14 @@ Variables:
   IA_OPTUNA_AUTO_WEEKDAY=5          # 0=lun … 5=sáb, 6=dom
   IA_OPTUNA_AUTO_TRIALS=50
   IA_OPTUNA_AUTO_MONTHS=8
-  IA_OPTUNA_AUTO_TRAIN_MONTHS=3
+  IA_OPTUNA_WF_SPLIT_TRAIN=0.70
+  IA_OPTUNA_OOS_MIN_SHARPE=0.0
+  IA_OPTUNA_STORAGE_ENABLE=1
+  IA_OPTUNA_STORAGE_URL=       — default sqlite:///logs/ia_optuna_trials.db
+  IA_OPTUNA_DASHBOARD_PORT=8080
+
+Dashboard (consola aparte, no bloquea el bot):
+  optuna-dashboard sqlite:///.../logs/ia_optuna_trials.db --port 8080
 """
 
 from __future__ import annotations
@@ -30,11 +37,7 @@ import MetaTrader5 as mt5
 import optuna
 
 from local_env import load_env_file, save_optuna_best_params
-from optuna_walkforward import (
-    _params_complete,
-    _walk_forward_windows,
-    objective_train_fold,
-)
+from optuna_walkforward import _params_complete, objective_train_fold
 
 _STATE_FILE = "ia_optuna_auto_state.json"
 
@@ -92,10 +95,9 @@ def ejecutar_optuna_semanal(
     n_trials: int | None = None,
     force: bool = False,
     manage_mt5: bool = True,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """
-    Estudio Optuna in-sample sobre el último fold de entrenamiento walk-forward.
-    Devuelve parámetros listos para ``params_optimized.json``.
+    Optuna 70% IS + validación 30% OOS. Solo persiste params si OOS aprueba.
     """
     load_env_file()
     sym = (
@@ -108,15 +110,11 @@ def ejecutar_optuna_semanal(
         raise ValueError("Símbolo vacío para optimización")
 
     try:
-        months_total = int(os.environ.get("IA_OPTUNA_AUTO_MONTHS", os.environ.get("BT_MONTHS_TOTAL", "8")).strip() or "8")
+        months_total = int(
+            os.environ.get("IA_OPTUNA_AUTO_MONTHS", os.environ.get("BT_MONTHS_TOTAL", "8")).strip() or "8"
+        )
     except ValueError:
         months_total = 8
-    try:
-        train_m = int(os.environ.get("IA_OPTUNA_AUTO_TRAIN_MONTHS", os.environ.get("BT_TRAIN_MONTHS", "3")).strip() or "3")
-    except ValueError:
-        train_m = 3
-    test_m = 1
-    step_m = 1
 
     if n_trials is None:
         try:
@@ -138,36 +136,102 @@ def ejecutar_optuna_semanal(
         raise RuntimeError("MT5 no inicializado (ejecutar_optuna_semanal con manage_mt5=False)")
 
     try:
-        windows = _walk_forward_windows(months_total, train_m, test_m, step_m)
-        if not windows:
-            raise RuntimeError("Sin ventanas walk-forward; ajustá IA_OPTUNA_AUTO_MONTHS / TRAIN_MONTHS")
-        train_from, train_to, _test_to = windows[-1]
+        from ia_optuna_sharpe import optuna_objective_mode
+        from ia_walkforward_validate import (
+            evaluar_params_oos,
+            oos_params_aprobados,
+            ventanas_is_oos,
+        )
+
+        train_from, train_to, test_from, test_to = ventanas_is_oos(months_total)
+        obj = optuna_objective_mode()
+        from ia_optuna_storage import (
+            create_persistent_study,
+            dashboard_command_hint,
+            ensure_optuna_db_dir,
+            optuna_storage_url,
+        )
+
+        ensure_optuna_db_dir()
+        storage = optuna_storage_url()
+        if storage:
+            print(f"[optuna-auto] Persistencia SQLite: {storage}", flush=True)
+
         print(
-            f"[optuna-auto] {sym} | train [{train_from.date()} .. {train_to.date()}) | trials={n_trials}",
+            f"[optuna-auto] {sym} | IS [{train_from.date()} .. {train_to.date()}) | "
+            f"OOS [{test_from.date()} .. {test_to.date()}) | trials={n_trials} | objetivo={obj}",
             flush=True,
         )
-        study = optuna.create_study(
-            direction="maximize",
-            study_name=f"ia_auto_{sym}_{datetime.now(timezone.utc).strftime('%Y%m%d')}",
-            pruner=optuna.pruners.NopPruner(),
-        )
+        study = create_persistent_study(sym, direction="maximize")
         study.optimize(
             lambda tr: objective_train_fold(tr, sym, train_from, train_to),
             n_trials=n_trials,
         )
+        study.set_user_attr("train_from", train_from.isoformat())
+        study.set_user_attr("train_to", train_to.isoformat())
+        study.set_user_attr("test_from", test_from.isoformat())
+        study.set_user_attr("test_to", test_to.isoformat())
+        study.set_user_attr("objective_mode", obj)
         best = _params_complete(study)
-        env_p, json_p, opt_p = save_optuna_best_params(
+        is_value = float(study.best_value)
+
+        m_oos, trades_oos, sharpe_oos = evaluar_params_oos(sym, best, test_from, test_to)
+        ok_oos, why_oos = oos_params_aprobados(m_oos, sharpe_oos=sharpe_oos)
+
+        study.set_user_attr("oos_sharpe", float(sharpe_oos))
+        study.set_user_attr("oos_net", float(m_oos.get("net", 0.0) or 0.0))
+        study.set_user_attr("oos_n", int(m_oos.get("n", 0) or 0))
+        study.set_user_attr("oos_approved", bool(ok_oos))
+
+        print(
+            f"[optuna-auto] IS value={is_value:.4f} | OOS Sharpe={sharpe_oos:.3f} net={m_oos.get('net', 0):.2f} "
+            f"n={m_oos.get('n', 0)} | {why_oos}",
+            flush=True,
+        )
+        if storage:
+            print(f"[optuna-auto] Dashboard: {dashboard_command_hint()}", flush=True)
+            try:
+                port = int(os.environ.get("IA_OPTUNA_DASHBOARD_PORT", "8080").strip() or "8080")
+            except ValueError:
+                port = 8080
+            print(f"[optuna-auto] Navegador: http://127.0.0.1:{port}/", flush=True)
+
+        if not ok_oos:
+            print(
+                "[optuna-auto] RECHAZADO: no se guarda params_optimized.json (sobreoptimización / OOS débil).",
+                file=sys.stderr,
+                flush=True,
+            )
+            _save_state(
+                last_run_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                symbol=sym,
+                rejected_oos=True,
+                oos_sharpe=sharpe_oos,
+                is_best_value=is_value,
+            )
+            return None
+
+        _env_p, _json_p, opt_p = save_optuna_best_params(
             best,
             symbol=sym,
-            mode="auto_weekend",
-            best_value=float(study.best_value),
+            mode="auto_weekend_wf70_oos30",
+            best_value=is_value,
+            oos_sharpe=sharpe_oos,
+            oos_net=float(m_oos.get("net", 0.0) or 0.0),
+            oos_n=int(m_oos.get("n", 0) or 0),
+            train_from=train_from.isoformat(),
+            train_to=train_to.isoformat(),
+            test_from=test_from.isoformat(),
+            test_to=test_to.isoformat(),
         )
-        print(f"[optuna-auto] OK value={study.best_value:.4f} -> {opt_p.name}", flush=True)
+        print(f"[optuna-auto] OK OOS aprobado -> {opt_p.name}", flush=True)
         print(f"[optuna-auto] Params: {best}", flush=True)
         _save_state(
             last_run_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             symbol=sym,
-            best_value=float(study.best_value),
+            best_value=is_value,
+            oos_sharpe=sharpe_oos,
+            rejected_oos=False,
         )
         return best
     finally:
@@ -188,8 +252,8 @@ def main() -> int:
         return 0
     n = args.trials if args.trials > 0 else None
     try:
-        ejecutar_optuna_semanal(sym, n_trials=n, force=args.force)
-        return 0
+        result = ejecutar_optuna_semanal(sym, n_trials=n, force=args.force)
+        return 0 if result is not None else 2
     except Exception as e:
         print(f"[optuna-auto] {e}", file=sys.stderr)
         return 1
