@@ -15,6 +15,7 @@ import MetaTrader5 as mt5
 from mt5_prices import mt5_copy_rates_from_pos_cached
 
 from signal_analysis import _atr_series, _true_ranges
+from market_regime import fetch_rates
 from mt5_prices import BOT_MAGIC
 from ia_mt5_normalize import normalizar_precio
 
@@ -332,6 +333,47 @@ def _atr_last(symbol: str, tf: int, period: int, bars: int = 120) -> float | Non
     if not ser:
         return None
     return float(ser[-1])
+
+
+def gestionar_trailing_autonomo(
+    posicion,
+    atr_m15_cerrado: float,
+    multiplicador_trail: float = 2.0,
+) -> bool:
+    """
+    Trailing ATR M15 sobre la vela cerrada (misma política que ``manage_position_expert``).
+
+    Usa precio de cierre M15, no tick en vivo, para evitar whipsaw intra-vela.
+    """
+    if atr_m15_cerrado <= 0:
+        return False
+    sym = str(getattr(posicion, "symbol", "") or "")
+    try:
+        atr_period = int(os.environ.get("IA_AUTO_ATR_PERIOD", "14").strip() or "14")
+    except ValueError:
+        atr_period = 14
+    trigger = {"close": 0.0, "atr": float(atr_m15_cerrado)}
+    pack = fetch_rates(sym, mt5.TIMEFRAME_M15, 5)
+    if pack is not None:
+        _h, _l, closes = pack
+        if closes:
+            trigger["close"] = float(closes[-2] if len(closes) >= 2 else closes[-1])
+    if trigger["close"] <= 0:
+        tick = mt5.symbol_info_tick(sym)
+        if tick is None:
+            return False
+        typ = int(getattr(posicion, "type", -1))
+        trigger["close"] = float(
+            getattr(tick, "bid", 0) if typ == mt5.POSITION_TYPE_BUY else getattr(tick, "ask", 0)
+        )
+    return manage_position_expert(
+        posicion,
+        trail_mult=float(multiplicador_trail),
+        be_trigger_rr=1.0,
+        be_buffer_pts=0.0,
+        trailing_mode=True,
+        trigger=trigger,
+    )
 
 
 def manage_position_expert(

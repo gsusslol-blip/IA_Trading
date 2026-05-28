@@ -20,9 +20,15 @@ def _env_on(key: str, default: str = "0") -> bool:
     return os.environ.get(key, default).strip().lower() in ("1", "true", "yes")
 
 
-def consecutive_bot_losses(*, lookback_hours: float = 72.0) -> int:
+def consecutive_bot_losses(
+    *,
+    lookback_hours: float = 72.0,
+    symbol: str | None = None,
+    magic_number: int | None = None,
+) -> int:
     """
     Cuenta pérdidas consecutivas desde la más reciente (solo posiciones cerradas con PnL neto < 0).
+    ``symbol`` opcional: solo deals de ese símbolo MT5.
     """
     if not _env_on("IA_STREAK_ENABLE", "1"):
         return 0
@@ -37,8 +43,12 @@ def consecutive_bot_losses(*, lookback_hours: float = 72.0) -> int:
         return 0
 
     by_pid: dict[int, list] = {}
+    magic_want = int(magic_number) if magic_number is not None else BOT_MAGIC
+    sym_u = symbol.upper().strip() if symbol else ""
     for d in deals:
-        if int(getattr(d, "magic", -1) or -1) != BOT_MAGIC:
+        if int(getattr(d, "magic", -1) or -1) != magic_want:
+            continue
+        if sym_u and str(getattr(d, "symbol", "") or "").upper() != sym_u:
             continue
         pid = int(getattr(d, "position_id", 0) or 0)
         if pid <= 0:
@@ -131,3 +141,42 @@ def apply_streak_to_risk_percent(risk_percent: float) -> float:
     """Aplica el multiplicador de racha al % de riesgo configurado."""
     refresh_streak_risk_state()
     return float(risk_percent) * float(_LAST_STREAK_MULT)
+
+
+def verificar_cortacircuitos(
+    symbol: str,
+    magic_number: int | None = None,
+    max_perdidas_seguidas: int = 3,
+) -> bool:
+    """
+    API de integración: True = cuenta sana (puede operar), False = cortacircuitos activo.
+
+    Respeta ``IA_STREAK_ENABLE``, halt temporal (``IA_STREAK_HALT_HOURS``) y racha global o por símbolo.
+    """
+    if not _env_on("IA_STREAK_ENABLE", "1"):
+        return True
+    halted, _why = trading_halted_by_streak()
+    if halted:
+        return False
+    per_sym = _env_on("IA_STREAK_PER_SYMBOL", "0")
+    try:
+        lookback_h = float(os.environ.get("IA_STREAK_LOOKBACK_HOURS", "24").strip() or "24")
+    except ValueError:
+        lookback_h = 24.0
+    try:
+        need = int(os.environ.get("IA_STREAK_LOSSES", str(max_perdidas_seguidas)).strip() or max_perdidas_seguidas)
+    except ValueError:
+        need = max_perdidas_seguidas
+    need = max(1, min(20, need))
+    streak = consecutive_bot_losses(
+        lookback_hours=lookback_h,
+        symbol=symbol if per_sym else None,
+        magic_number=magic_number,
+    )
+    if streak >= need:
+        print(
+            f"[cortacircuitos] {symbol}: racha de {streak} pérdidas (límite {need}).",
+            flush=True,
+        )
+        return False
+    return True

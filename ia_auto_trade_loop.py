@@ -159,8 +159,13 @@ from mt5_prices import (
     closed_positions_pnls_by_magic,
 )
 from ia_risk_manager import calcular_lotaje_dinamico
-from ia_risk_streak import apply_streak_to_risk_percent, refresh_streak_risk_state, trading_halted_by_streak
-from ia_regime_autopilot import apply_regime_autopilot
+from ia_risk_streak import (
+    apply_streak_to_risk_percent,
+    refresh_streak_risk_state,
+    trading_halted_by_streak,
+    verificar_cortacircuitos,
+)
+from ia_regime_autopilot import actualizar_regimen_autonomo, apply_regime_autopilot
 from ia_mt5_normalize import normalizar_precio, normalizar_volumen
 from ia_utils import execution_quality_max_mb_from_env, rotar_log_por_tamaño
 from trade_audit import (
@@ -1765,6 +1770,16 @@ def main() -> None:
             except Exception:
                 pass
 
+            halted_cycle, halt_cycle_why = trading_halted_by_streak()
+            if halted_cycle:
+                print(f"[cortacircuitos] Ciclo pausado: {halt_cycle_why}")
+                try:
+                    manage_all_bot_positions_expert(resolved_symbols_only)
+                except Exception as e:
+                    print(f"[pos-mgmt] {e}", file=sys.stderr)
+                time.sleep(max(float(interval), 5.0))
+                continue
+
             if trades_sent_session > 0 and int(relax_ctx.get("level", 0)) > 0:
                 print("[auto-relax] reinicio tras orden; niveles de relajación a cero.")
                 relax_ctx["level"] = 0
@@ -1848,10 +1863,17 @@ def main() -> None:
                 if not stack_same_symbol and _position_side_for_bot(sym) is not None:
                     continue
 
+                if not verificar_cortacircuitos(sym, magic_number=BOT_MAGIC):
+                    continue
+
                 try:
+                    regime_label, rr_auto = actualizar_regimen_autonomo(sym)
                     regime_mode = apply_regime_autopilot(sym)
                     if regime_mode not in ("off", "neutral"):
-                        print(f"[regime-auto] {sym} modo={regime_mode}")
+                        print(
+                            f"[regime-auto] {sym} modo={regime_mode} "
+                            f"({regime_label} RR={rr_auto:.2f})"
+                        )
                 except Exception as e:
                     print(f"[regime-auto] {e}", file=sys.stderr)
 

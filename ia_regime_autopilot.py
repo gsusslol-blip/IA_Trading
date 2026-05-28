@@ -121,3 +121,39 @@ def apply_regime_autopilot(symbol: str) -> str:
         return "trend"
 
     return "neutral"
+
+
+def actualizar_regimen_autonomo(
+    symbol: str,
+    periodo_atr: int = 14,
+    periodo_historico: int = 100,
+) -> tuple[str, float]:
+    """
+    API de integración: etiqueta de régimen + RR sugerido.
+
+    Delega en ``apply_regime_autopilot`` (ADX + percentil ATR M15). Valores por defecto si falla.
+    """
+    del periodo_atr, periodo_historico
+    try:
+        rr_def = float(os.environ.get("RR", "2").strip() or "2")
+    except ValueError:
+        rr_def = 2.0
+    try:
+        mode = apply_regime_autopilot(symbol)
+    except Exception:
+        return "ESTANDAR", rr_def
+    if mode == "range":
+        try:
+            rr = float(os.environ.get("IA_REGIME_AUTO_RR_RANGE", "1.5").strip() or "1.5")
+        except ValueError:
+            rr = 1.5
+        return "RANGO", rr
+    if mode == "trend":
+        try:
+            rr = float(os.environ.get("IA_REGIME_AUTO_RR_TREND", "2.5").strip() or "2.5")
+        except ValueError:
+            rr = 2.5
+        return "TENDENCIA_FUERTE", rr
+    if mode == "off":
+        return "ESTANDAR", rr_def
+    return "ESTANDAR", rr_def
