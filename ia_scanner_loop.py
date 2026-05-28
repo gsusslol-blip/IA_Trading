@@ -94,6 +94,24 @@ def _scan_cfg_int(
     return max(lo, min(hi, v))
 
 
+def _scan_cfg_bool(
+    cfg: dict[str, Any] | None,
+    cfg_key: str,
+    env_key: str,
+    *,
+    default: bool = False,
+) -> bool:
+    if cfg:
+        raw_c = cfg.get(cfg_key)
+        if raw_c is not None and str(raw_c).strip() != "":
+            return str(raw_c).strip().lower() in ("1", "true", "yes", "on")
+    return os.environ.get(env_key, "1" if default else "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def _scan_cfg_float(
     cfg: dict[str, Any] | None,
     cfg_key: str,
@@ -604,16 +622,8 @@ def analizar_ia(
                 )
             return "Sin señal clara"
 
-    skip_vol_check = os.environ.get("IA_SCAN_SKIP_VOLUME_CONFIRM", "0").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    vol_relax = os.environ.get("IA_SCAN_VOLUME_RELAX", "0").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    skip_vol_check = _scan_cfg_bool(cfg, "IA_SCAN_SKIP_VOLUME_CONFIRM", "IA_SCAN_SKIP_VOLUME_CONFIRM")
+    vol_relax = _scan_cfg_bool(cfg, "IA_SCAN_VOLUME_RELAX", "IA_SCAN_VOLUME_RELAX")
     if skip_vol_check:
         vol_confirmado = True
     elif vol_relax:
@@ -627,11 +637,7 @@ def analizar_ia(
         v_trigger["open"]
     ) > float(v_previa["close"])
 
-    soft_trig = os.environ.get("IA_SCAN_SOFT_TRIGGER", "0").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    soft_trig = _scan_cfg_bool(cfg, "IA_SCAN_SOFT_TRIGGER", "IA_SCAN_SOFT_TRIGGER")
     prev_close = float(v_previa["close"])
     cv = float(v_trigger["close"])
     ov = float(v_trigger["open"])
@@ -737,11 +743,7 @@ def analizar_ia(
             return "Sin señal clara"
 
     # Filtro de estructura: exigir ruptura del rango reciente en M15
-    skip_bo = os.environ.get("IA_SCAN_SKIP_BREAKOUT", "0").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    skip_bo = _scan_cfg_bool(cfg, "IA_SCAN_SKIP_BREAKOUT", "IA_SCAN_SKIP_BREAKOUT")
     lb = lb_bp
     if is_replay_snap:
         recent = df_m15.iloc[-(lb + 2) : -1]

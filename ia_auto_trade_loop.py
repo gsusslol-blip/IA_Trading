@@ -165,7 +165,13 @@ from ia_risk_streak import (
     trading_halted_by_streak,
     verificar_cortacircuitos,
 )
-from ia_regime_autopilot import actualizar_regimen_autonomo, apply_regime_autopilot
+from ia_config_bridge import (
+    aplicar_config_en_memoria,
+    inyectar_configuracion_autonoma,
+    snapshot_scanner_config_base,
+)
+from ia_autonomy_notify import notify_circuit_halt_global, notify_regime_change
+from ia_regime_autopilot import actualizar_regimen_autonomo
 from ia_mt5_normalize import normalizar_precio, normalizar_volumen
 from ia_utils import execution_quality_max_mb_from_env, rotar_log_por_tamaño
 from trade_audit import (
@@ -1745,6 +1751,8 @@ def main() -> None:
                     "IA_M15_MOMENTUM_MIN_BODY_RATIO", "0.45"
                 )
                 relax_ctx["block_hv_base"] = os.environ.get("IA_REGIME_BLOCK_HIGH_VOL", "1")
+            if "regime_last" not in relax_ctx:
+                relax_ctx["regime_last"] = {}
 
             try:
                 _mx_log = execution_quality_max_mb_from_env()
@@ -1773,6 +1781,10 @@ def main() -> None:
             halted_cycle, halt_cycle_why = trading_halted_by_streak()
             if halted_cycle:
                 print(f"[cortacircuitos] Ciclo pausado: {halt_cycle_why}")
+                try:
+                    notify_circuit_halt_global(halt_cycle_why)
+                except Exception as e:
+                    print(f"[TG] {e}", file=sys.stderr)
                 try:
                     manage_all_bot_positions_expert(resolved_symbols_only)
                 except Exception as e:
@@ -1866,18 +1878,34 @@ def main() -> None:
                 if not verificar_cortacircuitos(sym, magic_number=BOT_MAGIC):
                     continue
 
+                config_ejecucion: dict = {}
                 try:
                     regime_label, rr_auto = actualizar_regimen_autonomo(sym)
-                    regime_mode = apply_regime_autopilot(sym)
-                    if regime_mode not in ("off", "neutral"):
-                        print(
-                            f"[regime-auto] {sym} modo={regime_mode} "
-                            f"({regime_label} RR={rr_auto:.2f})"
-                        )
+                    config_ejecucion = inyectar_configuracion_autonoma(
+                        snapshot_scanner_config_base(),
+                        regime_label,
+                        rr_auto,
+                    )
+                    aplicar_config_en_memoria(config_ejecucion)
+                    prev_reg = relax_ctx.get("regime_last", {}).get(sym)
+                    if prev_reg != regime_label:
+                        relax_ctx["regime_last"][sym] = regime_label
+                        if os.environ.get("IA_REGIME_AUTO_ENABLE", "0").strip().lower() in (
+                            "1",
+                            "true",
+                            "yes",
+                        ):
+                            print(
+                                f"[regime-auto] {sym} {prev_reg or '—'} → {regime_label} RR={rr_auto:.2f}"
+                            )
+                            try:
+                                notify_regime_change(sym, regime_label, rr_auto)
+                            except Exception as e:
+                                print(f"[TG] régimen: {e}", file=sys.stderr)
                 except Exception as e:
                     print(f"[regime-auto] {e}", file=sys.stderr)
 
-                sig = analizar_ia(sym)
+                sig = analizar_ia(sym, config=config_ejecucion or None)
                 if os.environ.get("SENTIMENT_FILTER", "0").strip().lower() in ("1", "true", "yes"):
                     try:
                         from sentiment_news import sentiment_allows_trade

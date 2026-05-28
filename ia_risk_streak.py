@@ -178,5 +178,21 @@ def verificar_cortacircuitos(
             f"[cortacircuitos] {symbol}: racha de {streak} pérdidas (límite {need}).",
             flush=True,
         )
+        try:
+            from ia_autonomy_notify import notify_circuit_breaker
+
+            try:
+                halt_h = float(os.environ.get("IA_STREAK_HALT_HOURS", "0").strip() or "0")
+            except ValueError:
+                halt_h = 0.0
+            notify_circuit_breaker(
+                symbol,
+                streak=streak,
+                limit=need,
+                per_symbol=per_sym,
+                halt_hours=halt_h,
+            )
+        except Exception as e:
+            print(f"[cortacircuitos] alerta TG: {e}", flush=True)
         return False
     return True
