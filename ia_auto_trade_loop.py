@@ -129,11 +129,13 @@ from ia_scanner_loop import analizar_ia, es_horario_seguro, validate_scan_sessio
 from m15_ma_scan import _resolve_scan_symbol
 from ia_auto_memory import sync_memory_from_mt5, summary_from_csv
 from signal_analysis import _atr_series, _true_ranges
+from ia_asset_profile import dxy_blocks_buy, symbol_sl_atr_mult
 from ia_auto_expert import (
-    dxy_blocks_gold_buy,
     dxy_context_for_alert,
     manage_all_bot_positions_expert,
+    m15_atr_last_closed,
     pro_session_allows_order,
+    refresh_dxy_bias_cache,
     session_context_for_alert,
     shakeout_reentry_window_active,
 )
@@ -157,6 +159,9 @@ from mt5_prices import (
     closed_positions_pnls_by_magic,
 )
 from ia_risk_manager import calcular_lotaje_dinamico
+from ia_risk_streak import apply_streak_to_risk_percent, refresh_streak_risk_state, trading_halted_by_streak
+from ia_regime_autopilot import apply_regime_autopilot
+from ia_mt5_normalize import normalizar_precio, normalizar_volumen
 from ia_utils import execution_quality_max_mb_from_env, rotar_log_por_tamaño
 from trade_audit import (
     execution_quality_csv_path,
@@ -1233,13 +1238,28 @@ def _total_risk_cap_allows_new_order(
         equity=equity,
     )
     if cur_risk_pct is None or new_risk_pct is None:
+        strict = os.environ.get("IA_AUTO_MAX_TOTAL_RISK_STRICT", "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if strict:
+            return False, "no se pudo estimar riesgo (cap estricto activo)"
         return True, ""
 
     after = cur_risk_pct + new_risk_pct
     if after > cap:
+        open_syms = []
+        for p in mt5.positions_get() or []:
+            if int(getattr(p, "magic", -1) or -1) != BOT_MAGIC:
+                continue
+            s = str(getattr(p, "symbol", "") or "")
+            if s and s not in open_syms:
+                open_syms.append(s)
+        sym_note = ",".join(open_syms[:6]) if open_syms else "—"
         return False, (
             f"riesgo_total={after:.2f}% (abierto={cur_risk_pct:.2f}% + nueva={new_risk_pct:.2f}%) "
-            f"> cap {cap:.2f}%"
+            f"> cap {cap:.2f}% | abiertos=[{sym_note}]"
         )
     return True, ""
 
@@ -1306,6 +1326,11 @@ def enviar_orden(
             )
             return False
 
+    halted, halt_why = trading_halted_by_streak()
+    if halted:
+        print(f"{simbolo}: {halt_why}. IA_STREAK_HALT_HOURS o esperar ganador.", file=sys.stderr)
+        return False
+
     ok_slip, slip_why = slippage_guard_allows_order(simbolo)
     if not ok_slip:
         print(
@@ -1335,32 +1360,29 @@ def enviar_orden(
 
     sl_mode = os.environ.get("IA_AUTO_SL_MODE", "percent").strip().lower()
     sl_dist = 0.0
-    if sl_mode in ("atr", "atr_m5"):
+    if sl_mode in ("atr", "atr_m15", "atr_m5"):
         try:
             atr_period = int(os.environ.get("IA_AUTO_ATR_PERIOD", "14").strip() or "14")
         except ValueError:
             atr_period = 14
-        try:
-            atr_mult = float(
-                os.environ.get(
-                    "IA_AUTO_SL_ATR_MULT",
-                    os.environ.get("IA_ATR_SL_MULT", "1.6"),
-                ).strip()
-                or "1.6"
-            )
-        except ValueError:
-            atr_mult = 1.6
-        m5 = mt5_copy_rates_from_pos_cached(simbolo, mt5.TIMEFRAME_M5, 0, 400)
-        if m5 is None or len(m5) < atr_period + 10:
-            return False
-        highs0 = [float(r["high"]) for r in m5]
-        lows0 = [float(r["low"]) for r in m5]
-        closes0 = [float(r["close"]) for r in m5]
-        trs0 = _true_ranges(highs0, lows0, closes0)
-        ser = _atr_series(trs0, atr_period)
-        if not ser:
-            return False
-        atr = float(ser[-1])
+        atr_mult = symbol_sl_atr_mult(simbolo)
+        if sl_mode == "atr_m5":
+            m5 = mt5_copy_rates_from_pos_cached(simbolo, mt5.TIMEFRAME_M5, 0, 400)
+            if m5 is None or len(m5) < atr_period + 10:
+                return False
+            highs0 = [float(r["high"]) for r in m5]
+            lows0 = [float(r["low"]) for r in m5]
+            closes0 = [float(r["close"]) for r in m5]
+            trs0 = _true_ranges(highs0, lows0, closes0)
+            ser = _atr_series(trs0, atr_period)
+            if not ser:
+                return False
+            atr = float(ser[-1])
+        else:
+            # atr / atr_m15: mismo marco que gatillo y gestión activa (M15 vela cerrada)
+            atr = m15_atr_last_closed(simbolo, atr_period=atr_period)
+            if atr is None:
+                return False
         sl_dist = max(atr * atr_mult, min_dist)
     else:
         try:
@@ -1379,21 +1401,33 @@ def enviar_orden(
         tp = (price - tp_dist) if not use_trailing_tp else 0.0
         typ = mt5.ORDER_TYPE_SELL
 
-    if buy and dxy_blocks_gold_buy(simbolo):
-        print(f"{simbolo}: filtro DXY bloquea COMPRAS (indice alcista).", file=sys.stderr)
+    if buy and dxy_blocks_buy(simbolo):
+        from ia_asset_profile import dxy_context_line
+
+        print(
+            f"{simbolo}: filtro DXY bloquea COMPRA ({dxy_context_line(simbolo)}).",
+            file=sys.stderr,
+        )
         return False
 
-    sl = round(float(sl), digits)
+    sl_n = normalizar_precio(simbolo, float(sl), info=info)
+    if sl_n is None:
+        return False
+    sl = sl_n
     if use_trailing_tp:
         tp = 0.0
     else:
-        tp = round(float(tp), digits)
+        tp_n = normalizar_precio(simbolo, float(tp), info=info)
+        if tp_n is None:
+            return False
+        tp = tp_n
 
     rper = _risk_percent_per_trade()
     if rper is not None:
         acct = mt5.account_info()
         equity_now = float(getattr(acct, "equity", 0.0) or 0.0) if acct is not None else 0.0
         rper_eff = _effective_risk_percent_for_account(float(rper), account_equity=equity_now)
+        rper_eff = apply_streak_to_risk_percent(rper_eff)
         vcalc = calcular_lotaje_dinamico(
             simbolo,
             buy=buy,
@@ -1410,14 +1444,21 @@ def enviar_orden(
             )
             return False
         vol = vcalc
+        vol_n = normalizar_volumen(simbolo, vol, info=info)
+        if vol_n is not None:
+            vol = vol_n
     else:
         raw_vol = float(os.environ.get("IA_AUTO_LOTS", "0.01"))
-        vol_step = float(getattr(info, "volume_step", 0.01) or 0.01)
-        vol_min = float(getattr(info, "volume_min", 0.01) or 0.01)
-        vol = max(vol_min, _round_down_to_step(raw_vol, vol_step))
-        vol_max = float(getattr(info, "volume_max", 0.0) or 0.0)
-        if vol_max > 0:
-            vol = min(vol, vol_max)
+        vol_n = normalizar_volumen(simbolo, raw_vol, info=info)
+        if vol_n is None:
+            vol_step = float(getattr(info, "volume_step", 0.01) or 0.01)
+            vol_min = float(getattr(info, "volume_min", 0.01) or 0.01)
+            vol = max(vol_min, _round_down_to_step(raw_vol, vol_step))
+            vol_max = float(getattr(info, "volume_max", 0.0) or 0.0)
+            if vol_max > 0:
+                vol = min(vol, vol_max)
+        else:
+            vol = vol_n
 
     ok_cap, why_cap = _total_risk_cap_allows_new_order(
         simbolo=simbolo,
@@ -1707,6 +1748,23 @@ def main() -> None:
             except Exception:
                 pass
 
+            try:
+                bias = refresh_dxy_bias_cache()
+                if bias not in ("OFF", "NEUTRAL", "UNKNOWN"):
+                    print(f"[DXY] bias={bias}")
+            except Exception:
+                pass
+
+            try:
+                streak_snap = refresh_streak_risk_state()
+                if streak_snap.get("enabled") and int(streak_snap.get("streak", 0) or 0) > 0:
+                    print(
+                        f"[streak] pérdidas seguidas={streak_snap.get('streak')} "
+                        f"mult_riesgo={streak_snap.get('mult')}"
+                    )
+            except Exception:
+                pass
+
             if trades_sent_session > 0 and int(relax_ctx.get("level", 0)) > 0:
                 print("[auto-relax] reinicio tras orden; niveles de relajación a cero.")
                 relax_ctx["level"] = 0
@@ -1789,6 +1847,13 @@ def main() -> None:
             for requested, sym in resolved_map:
                 if not stack_same_symbol and _position_side_for_bot(sym) is not None:
                     continue
+
+                try:
+                    regime_mode = apply_regime_autopilot(sym)
+                    if regime_mode not in ("off", "neutral"):
+                        print(f"[regime-auto] {sym} modo={regime_mode}")
+                except Exception as e:
+                    print(f"[regime-auto] {e}", file=sys.stderr)
 
                 sig = analizar_ia(sym)
                 if os.environ.get("SENTIMENT_FILTER", "0").strip().lower() in ("1", "true", "yes"):

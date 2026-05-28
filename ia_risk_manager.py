@@ -10,6 +10,8 @@ import math
 
 import MetaTrader5 as mt5
 
+from ia_mt5_normalize import normalizar_volumen
+
 
 def _round_down_to_step(value: float, step: float) -> float:
     if step <= 0:
@@ -70,12 +72,14 @@ def calcular_lotaje_dinamico(
         return None
 
     vol = risk_money / loss_mag
-    vol_step = float(getattr(info, "volume_step", 0.01) or 0.01)
-    vol_min = float(getattr(info, "volume_min", 0.01) or 0.01)
-    vol_max = float(getattr(info, "volume_max", 0.0) or 0.0)
-
-    vol = max(vol_min, _round_down_to_step(vol, vol_step))
-    if vol_max > 0:
-        vol = min(vol, vol_max)
-    return float(vol)
+    vol_n = normalizar_volumen(symbol, vol, info=info)
+    if vol_n is None:
+        vol_step = float(getattr(info, "volume_step", 0.01) or 0.01)
+        vol_min = float(getattr(info, "volume_min", 0.01) or 0.01)
+        vol_max = float(getattr(info, "volume_max", 0.0) or 0.0)
+        vol = max(vol_min, _round_down_to_step(vol, vol_step))
+        if vol_max > 0:
+            vol = min(vol, vol_max)
+        return float(vol)
+    return float(vol_n)
 

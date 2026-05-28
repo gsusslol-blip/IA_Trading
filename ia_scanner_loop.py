@@ -721,18 +721,17 @@ def analizar_ia(
 
     if (
         base == "BUY"
-        and _scanner_simbolo_es_oro(simbolo)
         and os.environ.get("IA_DXY_SCANNER_ENABLE", "1").strip().lower() in ("1", "true", "yes")
         and os.environ.get("IA_DXY_FILTER_ENABLE", "0").strip().lower() in ("1", "true", "yes")
     ):
-        from ia_auto_expert import dxy_blocks_gold_buy
+        from ia_asset_profile import dxy_blocks_buy, dxy_context_line
 
-        if dxy_blocks_gold_buy(simbolo):
+        if dxy_blocks_buy(simbolo):
             if _filtros_debug_activos():
                 log_filtro_descarte(
-                    "DXY_ORO",
-                    "USDX bullish / filtro",
-                    "omitir BUY en metal",
+                    "DXY_MULTI",
+                    dxy_context_line(simbolo),
+                    "omitir BUY según clase activo",
                     simbolo=simbolo,
                 )
             return "Sin señal clara"
