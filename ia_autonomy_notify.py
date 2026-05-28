@@ -117,6 +117,29 @@ def notify_margin_blocked(symbol: str, volume: float, reason: str) -> bool:
     return enviar_alerta_telegram(msg)
 
 
+def notify_news_shield_active(detail: str = "") -> bool:
+    if not _should_send("news:shield_on"):
+        return False
+    extra = f"\nPróximo/evento: <code>{detail}</code>" if detail else ""
+    msg = (
+        "<b>IA_Trading — ESCUDO DE NOTICIAS</b>\n\n"
+        "Noticia de <b>alto impacto (USD)</b> en ventana de riesgo.\n"
+        "Scanner pausado; gestión de posiciones abiertas (SL/TP/BE) sigue activa."
+        f"{extra}"
+    )
+    return enviar_alerta_telegram(msg)
+
+
+def notify_news_shield_cleared() -> bool:
+    if not _should_send("news:shield_off"):
+        return False
+    msg = (
+        "<b>IA_Trading — MERCADO LIBRE DE NOTICIAS</b>\n\n"
+        "Finalizó la ventana de alta volatilidad macro. El scanner vuelve en línea."
+    )
+    return enviar_alerta_telegram(msg)
+
+
 def notify_regime_change(symbol: str, regimen: str, rr_dinamico: float) -> bool:
     """Aviso cuando el régimen autónomo cambia respecto al ciclo anterior."""
     key = f"regime:{symbol}:{regimen}"

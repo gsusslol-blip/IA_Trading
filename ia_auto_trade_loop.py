@@ -159,6 +159,12 @@ from mt5_prices import (
     closed_positions_pnls_by_magic,
 )
 from ia_mt5_connection import asegurar_conexion_mt5
+from ia_news_filter import (
+    news_filter_enabled,
+    refresh_high_impact_cache,
+    verificar_bloqueo_por_noticias,
+    describe_active_news_block,
+)
 from ia_risk_manager import calcular_lotaje_dinamico, validar_margen_disponible
 from ia_risk_streak import (
     apply_streak_to_risk_percent,
@@ -171,7 +177,12 @@ from ia_config_bridge import (
     inyectar_configuracion_autonoma,
     snapshot_scanner_config_base,
 )
-from ia_autonomy_notify import notify_circuit_halt_global, notify_regime_change
+from ia_autonomy_notify import (
+    notify_circuit_halt_global,
+    notify_news_shield_active,
+    notify_news_shield_cleared,
+    notify_regime_change,
+)
 from ia_regime_autopilot import actualizar_regimen_autonomo
 from ia_mt5_normalize import normalizar_precio, normalizar_volumen
 from ia_utils import execution_quality_max_mb_from_env, rotar_log_por_tamaño
@@ -1343,6 +1354,13 @@ def enviar_orden(
         print(f"{simbolo}: {halt_why}. IA_STREAK_HALT_HOURS o esperar ganador.", file=sys.stderr)
         return False
 
+    if news_filter_enabled() and verificar_bloqueo_por_noticias():
+        print(
+            f"{simbolo}: bloqueado por ventana de noticias macro ({describe_active_news_block()}).",
+            file=sys.stderr,
+        )
+        return False
+
     ok_slip, slip_why = slippage_guard_allows_order(simbolo)
     if not ok_slip:
         print(
@@ -1780,6 +1798,38 @@ def main() -> None:
                 relax_ctx["block_hv_base"] = os.environ.get("IA_REGIME_BLOCK_HIGH_VOL", "1")
             if "regime_last" not in relax_ctx:
                 relax_ctx["regime_last"] = {}
+            if "news_shield_alert" not in relax_ctx:
+                relax_ctx["news_shield_alert"] = False
+
+            if news_filter_enabled():
+                try:
+                    refresh_high_impact_cache()
+                except Exception as e:
+                    print(f"[news] {e}", file=sys.stderr)
+                if verificar_bloqueo_por_noticias():
+                    if not relax_ctx.get("news_shield_alert"):
+                        try:
+                            notify_news_shield_active(describe_active_news_block())
+                        except Exception as e:
+                            print(f"[TG] news: {e}", file=sys.stderr)
+                        relax_ctx["news_shield_alert"] = True
+                        print("[news] Escudo activo: scanner pausado (gestión de posiciones sigue).")
+                    try:
+                        manage_all_bot_positions_expert(resolved_symbols_only)
+                    except Exception as e:
+                        print(f"[pos-mgmt] {e}", file=sys.stderr)
+                    try:
+                        news_sleep = float(os.environ.get("IA_NEWS_LOOP_SLEEP_S", "10").strip() or "10")
+                    except ValueError:
+                        news_sleep = 10.0
+                    time.sleep(max(3.0, news_sleep))
+                    continue
+                if relax_ctx.get("news_shield_alert"):
+                    try:
+                        notify_news_shield_cleared()
+                    except Exception as e:
+                        print(f"[TG] news: {e}", file=sys.stderr)
+                    relax_ctx["news_shield_alert"] = False
 
             try:
                 _mx_log = execution_quality_max_mb_from_env()
