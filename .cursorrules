@@ -9,6 +9,8 @@
 - `ia_mt5_normalize.py` — precios/volumen según `symbol_info`.
 - `ia_risk_manager.py` — lotaje dinámico y `validar_margen_disponible`.
 - `ia_mt5_connection.py` — reconexión MT5.
+- `ia_auto_optimizer.py` — Optuna fin de semana → `params_optimized.json`.
+- `ia_intelligence_layer.py` — filtro ML + auto-tune spread por `execution_quality.csv`.
 - `local_env.py` — carga `.env` (nunca commitear `.env` con secretos).
 
 ## Arquitectura y estilo

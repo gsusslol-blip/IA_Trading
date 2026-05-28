@@ -165,6 +165,11 @@ from ia_news_filter import (
     verificar_bloqueo_por_noticias,
     describe_active_news_block,
 )
+from ia_auto_optimizer import debe_ejecutar_optuna_semanal, ejecutar_optuna_semanal, optuna_auto_enabled
+from ia_intelligence_layer import (
+    auto_ajuste_spread_por_auditoria,
+    intelligence_allows_trade,
+)
 from ia_risk_manager import calcular_lotaje_dinamico, validar_margen_disponible
 from ia_risk_streak import (
     apply_streak_to_risk_percent,
@@ -1361,6 +1366,11 @@ def enviar_orden(
         )
         return False
 
+    ml_ok, _ml_feats = intelligence_allows_trade(simbolo, buy=buy)
+    if not ml_ok:
+        print(f"{simbolo}: filtro ML rechazó la entrada.", file=sys.stderr)
+        return False
+
     ok_slip, slip_why = slippage_guard_allows_order(simbolo)
     if not ok_slip:
         print(
@@ -1784,12 +1794,30 @@ def main() -> None:
                 print(f"[MT5] {e}", file=sys.stderr)
                 break
 
+            if optuna_auto_enabled() and debe_ejecutar_optuna_semanal():
+                try:
+                    print("[optuna-auto] Iniciando optimización semanal…", flush=True)
+                    ejecutar_optuna_semanal(
+                        resolved_symbols_only[0] if resolved_symbols_only else None,
+                        manage_mt5=False,
+                    )
+                    applied_opt = cargar_configuracion_optimizada()
+                    if applied_opt:
+                        print(f"[optuna-auto] Aplicados {len(applied_opt)} parámetros.", flush=True)
+                except Exception as e:
+                    print(f"[optuna-auto] {e}", file=sys.stderr)
+
             if os.environ.get("IA_OPTUNA_RELOAD_EACH_ROUND", "1").strip().lower() not in (
                 "0",
                 "false",
                 "no",
             ):
                 cargar_configuracion_optimizada()
+
+            try:
+                auto_ajuste_spread_por_auditoria()
+            except Exception as e:
+                print(f"[autotune] {e}", file=sys.stderr)
 
             try:
                 journal_tick()

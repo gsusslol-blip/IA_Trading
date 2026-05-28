@@ -2,3 +2,5 @@ MetaTrader5
 pandas
 textblob
 optuna
+scikit-learn
+joblib

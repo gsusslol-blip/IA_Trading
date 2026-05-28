@@ -140,6 +140,17 @@ def notify_news_shield_cleared() -> bool:
     return enviar_alerta_telegram(msg)
 
 
+def notify_spread_autotune(avg_slip_pts: float, strict_pctl: float) -> bool:
+    if not _should_send("autotune:spread"):
+        return False
+    msg = (
+        "<b>IA_Trading — AUTO-TUNE SPREAD</b>\n\n"
+        f"Slippage medio reciente: <b>{avg_slip_pts:.1f}</b> pts\n"
+        f"Percentil dinámico endurecido a <b>{strict_pctl:g}</b>."
+    )
+    return enviar_alerta_telegram(msg)
+
+
 def notify_regime_change(symbol: str, regimen: str, rr_dinamico: float) -> bool:
     """Aviso cuando el régimen autónomo cambia respecto al ciclo anterior."""
     key = f"regime:{symbol}:{regimen}"
