@@ -1,0 +1,6 @@
+{
+  "project": "IA_Trading",
+  "notes": "Parámetros no secretos. Los secretos van en config/.env o .env en la raíz.",
+  "default_scan_interval_s": 30,
+  "default_symbols": ["XAUUSD"]
+}

@@ -1,47 +1,81 @@
-# Secretos y entornos (nunca versionar)
+# === Archivos de configuracion y claves privadas ===
 .env
 .env.*
 !.env.example
+config/.env
 *.local.env
 telegram_secrets.env
 *_secrets*
 *_token*
 
-# Python
+# === Base de datos persistente Optuna (ML / trials) ===
+logs/ia_optuna_trials.db
+logs/ia_optuna_trials.db-journal
+logs/ia_optuna_trials.db-wal
+logs/ia_optuna_trials.db-shm
+
+# === Datasets y registros de operaciones locales ===
+logs/trade_audit_ml.csv
+logs/execution_quality.csv
+logs/ia_audit_pending.json
+logs/ia_audit_pending.written.json
+logs/ia_friday_closure_state.json
+logs/ia_saturday_maintenance_state.json
+logs/*
+!logs/README.md
+!logs/.gitkeep
+
+# CSV de estado en raiz (generados en vivo)
+*.csv
+ia_optuna_auto_state.json
+ia_auto_memory_state.json
+ia_idle_tune_state.json
+ia_ml_train_state.json
+ia_telegram_panic_offset.json
+ia_trading_journal_state.json
+ia_trading_journal_state_real.json
+params_optimized.json
+ia_optuna_best.json
+
+# === Entornos virtuales Python ===
+.venv/
+venv/
+env/
 __pycache__/
 *.py[cod]
 *$py.class
 .Python
-.venv/
-venv/
 *.egg-info/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
 
-# IDE / OS
+# === Modelos entrenados (binarios IA) ===
+modelos/*.pkl
+modelos/*.joblib
+
+# === IDE / OS ===
 .idea/
 .vscode/
 *.swp
 Thumbs.db
 Desktop.ini
 
-# Logs y datos locales del bot (opcional; descomentá si no querés versionar CSV)
-# bot_demo_log.csv
-ia_auto_memory_state.json
-
-# Respaldos locales generados en la carpeta del proyecto
+# === Locks y respaldos locales ===
+ia_auto_trade_loop.lock
 backup_safe*.zip
+journal_backup/
 
-# Datos de ejecución (no versionar; usar respaldo ZIP o export manual)
-watchdog.log
+# Legacy (rutas antiguas en raiz; migrar a logs/)
 bot_demo_log.csv
 ia_auto_trade_memory.csv
 scan_decisions.csv
 spread_samples_*.csv
-ia_idle_tune_state.json
-ia_idle_tune.log
-ia_auto_trade_loop.lock
-ia_telegram_panic_offset.json
+trade_audit_ml.csv
+ia_audit_pending.json
 execution_quality.csv
+execution_quality_real.csv
+ia_phase1_journal.csv
+ia_phase1_journal_real.csv
 ia_auto_trade_loop_runtime.log
+ia_idle_tune.log

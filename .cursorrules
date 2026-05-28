@@ -1,0 +1,57 @@
+# Reglas de Proyecto: IA_Trading (Python + MetaTrader 5)
+
+## Carpetas de datos
+- `logs/` — `trade_audit_ml.csv`, `execution_quality.csv` (defaults vía `ia_paths.py`).
+- `config/` — `.env` opcional, `settings.json`.
+- `ARCHITECTURE.md` — mapa lógico core / trading / execution (`.py` en raíz por compatibilidad).
+- VPS: arrancar con `ia_watchdog.bat` (reinicio + Telegram vía `watchdog_notify.py`).
+- `ia_welcome.py` — reporte de bienvenida/diagnóstico al arranque (una vez por proceso).
+- `ia_profitability_filters.py` — ventana Londres/NY UTC + spread (antes del gatillo M15).
+- `ia_auto_expert.gestionar_salida_rentable` — lock SL al 70% del camino al TP.
+- `ia_optuna_sharpe.py` — objetivo Optuna Sharpe (`IA_OPTUNA_OBJECTIVE=sharpe`).
+- `ia_order_execution.py` — prioridad ORDER_FILLING (oro: IOC primero).
+- `ia_limit_entry.py` — BUY/SELL LIMIT con expiración M15 (`IA_LIMIT_ENTRY_ENABLE`).
+- `ia_liquidity_zones.py` — filtro high/low día anterior (`IA_D1_LIQUIDITY_ENABLE`).
+- `ia_fee_detector.py` — comisión por lote y BE real (`IA_FEE_BE_ENABLE`).
+- `ia_order_cleaner.py` — cancela límites vencidas cada ciclo.
+- `ia_microstructure.py` — stop hunt D1 + ventana Gold Fixing UTC (`IA_STOP_HUNT_ENABLE`, `IA_GOLD_FIXING_ENABLE`).
+
+## Mapa de módulos (raíz)
+- `ia_auto_trade_loop.py` — bucle principal auto-trading (MT5, noticias, régimen, órdenes).
+- `ia_scanner_loop.py` — señales M15/H4 (`analizar_ia`).
+- `ia_news_filter.py` — escudo macro (calendario XML, caché horaria).
+- `ia_remote_control.py` — pánico Telegram `/PANIC`, `/DETENER`, `/INICIAR`.
+- `ia_notifier.py` — alertas Telegram (`enviar_alerta_telegram`); implementación en `telegram_utils.py`.
+- `ia_mt5_normalize.py` — precios/volumen según `symbol_info`.
+- `ia_risk_manager.py` — lotaje dinámico y `validar_margen_disponible`.
+- `ia_mt5_connection.py` — reconexión MT5.
+- `ia_auto_optimizer.py` — Optuna fin de semana → `params_optimized.json`.
+- `ia_intelligence_layer.py` — filtro ML + auto-tune spread por `execution_quality.csv`.
+- `ia_indicators.py` — ADX M15, distancia EMA H4, ATR pctl (caché MT5).
+- `ia_gold_risk.py` — lotaje XAU por contract_size + apalancamiento.
+- `ia_filesystem.py` — carpetas/CSV al arranque del bucle auto.
+- `ia_audit_logger.py` — dataset ML (métricas en apertura, resultado en cierre).
+- `ia_trainer.py` — entrena `modelos/filtro_falsos_rompimientos.pkl` desde `trade_audit_ml.csv`.
+- `local_env.py` — carga `.env` (nunca commitear `.env` con secretos).
+
+## Arquitectura y estilo
+- Python 3.10+; tipado donde aporte claridad.
+- Programación defensiva: validar que `mt5.copy_rates_from_pos`, `mt5.positions_get`, `mt5.account_info` no sean `None` antes de indexar.
+- Red: preferir `urllib.request` con `timeout` estricto (como `telegram_utils`, `ia_news_filter`). No introducir `asyncio` para MT5.
+- Cambios mínimos y acotados; seguir convenciones del archivo que editas.
+
+## Reglas de oro MT5
+1. **Normalización:** SL/TP/precios con `ia_mt5_normalize.normalizar_precio`; volumen con `normalizar_volumen` (respeta `volume_step`).
+2. **Filling:** usar `_allowed_filling_modes_symbol` / iterar modos compatibles del símbolo (no asumir IOC en todos los brókers).
+3. **Magic:** operaciones del bot con `BOT_MAGIC` desde `mt5_prices` / `.env`.
+
+## Errores críticos
+- Retcodes `10016` (stops inválidos) y `10019` (sin margen): notificar con `ia_notifier.notify_mt5_trade_retcode_if_critical` o `enviar_alerta_telegram`.
+- Si el usuario pide **envíame / mandame al telegram**: enviar de verdad vía proyecto (`load_env_file`, `ia_notifier` / `send_tg_preview.py`), no solo texto en el chat.
+
+## Variables de entorno frecuentes
+- Riesgo cartera: `IA_AUTO_MAX_TOTAL_RISK_PERCENT` (no `IA_MAX_TOTAL_RISK_PERCENT`).
+- Auto-trading: `IA_AUTO_ENABLE=1`, `IA_SCAN_SYMBOLS`, `BOT_MAGIC`.
+- Telegram: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+- Pánico: `IA_TELEGRAM_PANIC_ENABLE=1`.
+- Noticias: `IA_NEWS_FILTER_ENABLE=1`.

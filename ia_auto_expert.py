@@ -15,10 +15,45 @@ import MetaTrader5 as mt5
 from mt5_prices import mt5_copy_rates_from_pos_cached
 
 from signal_analysis import _atr_series, _true_ranges
+from market_regime import fetch_rates
 from mt5_prices import BOT_MAGIC
+from ia_mt5_normalize import normalizar_precio
 
 
 _LAST_M15_MANAGED_CLOSE_TS: dict[str, int] = {}
+_TP_LOCK_LAST_ATTEMPT: dict[int, float] = {}
+_TP_LOCK_DONE: set[int] = set()
+
+# Cache DXY para enviar_orden (sin recalcular en hot path).
+_DXY_GOLD_BLOCK_CACHE: bool = False
+_DXY_BIAS_CACHE: str = "OFF"
+_DXY_CACHE_MONO: float = 0.0
+
+
+def m15_last_closed_bar_unix(symbol: str) -> int | None:
+    """Unix time de la última vela M15 **cerrada** (rates[-2]); None si no hay datos."""
+    r = mt5_copy_rates_from_pos_cached(symbol, mt5.TIMEFRAME_M15, 0, 4)
+    if r is None or len(r) < 2:
+        return None
+    try:
+        return int(r[-2]["time"])
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def m15_atr_last_closed(symbol: str, *, atr_period: int = 14) -> float | None:
+    """ATR de la última vela M15 cerrada (misma fuente que gestión activa / SL unificado)."""
+    trig = _m15_last_closed_trigger(symbol, atr_period=atr_period)
+    if trig is None:
+        return None
+    try:
+        atr = trig.get("atr")
+        if atr is None:
+            return None
+        v = float(atr)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _m15_last_closed_trigger(symbol: str, *, atr_period: int, bars: int | None = None) -> dict | None:
@@ -123,34 +158,87 @@ def _dxy_slope_pct_m15(symbol: str) -> float | None:
     return ((sma_now - sma_prev) / sma_prev) * 100.0
 
 
-def dxy_blocks_gold_buy(gold_symbol: str) -> bool:
+def _compute_dxy_bias() -> str:
     """
-    Si el indice DXY (o proxy) sube con fuerza en M15, bloquear COMPRAS en oro (correlacion inversa).
-
-    Modo pendiente simple (alineado con signal_analysis.obtener_bias_dxy):
-      IA_DXY_SLOPE_MODE=simple|close|bias
-    Por defecto: pendiente SMA (IA_DXY_SLOPE_FAST/SLOW).
+    ``BULLISH`` | ``BEARISH`` | ``NEUTRAL`` | ``UNKNOWN`` | ``OFF`` (filtro desactivado).
     """
-    del gold_symbol  # reservado p. ej. futuro multi-activo; el filtro usa IA_DXY_SYMBOL
     if os.environ.get("IA_DXY_FILTER_ENABLE", "0").strip().lower() not in ("1", "true", "yes"):
-        return False
+        return "OFF"
     dxy_sym = os.environ.get("IA_DXY_SYMBOL", "").strip()
     if not dxy_sym:
-        return False
+        return "UNKNOWN"
     mode = os.environ.get("IA_DXY_SLOPE_MODE", "sma").strip().lower()
     if mode in ("simple", "close", "bias"):
         from signal_analysis import obtener_bias_dxy
 
         b = obtener_bias_dxy(symbol=dxy_sym)
-        return b == "BULLISH"
+        if b == "BULLISH":
+            return "BULLISH"
+        if b == "BEARISH":
+            return "BEARISH"
+        return "NEUTRAL"
     sp = _dxy_slope_pct_m15(dxy_sym)
     if sp is None:
-        return False
+        return "UNKNOWN"
     try:
         thr = float(os.environ.get("IA_DXY_SLOPE_MIN_ABS_PCT", "0.02").strip() or "0.02")
     except ValueError:
         thr = 0.02
-    return sp >= thr
+    if sp >= thr:
+        return "BULLISH"
+    if sp <= -thr:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
+def _dxy_blocks_gold_buy_compute() -> bool:
+    """Compat: oro bloqueado si DXY alcista."""
+    return _compute_dxy_bias() == "BULLISH"
+
+
+def refresh_dxy_bias_cache() -> str:
+    """Actualiza cache global DXY (llamar 1× por ronda de escaneo)."""
+    global _DXY_GOLD_BLOCK_CACHE, _DXY_BIAS_CACHE, _DXY_CACHE_MONO
+    _DXY_BIAS_CACHE = _compute_dxy_bias()
+    _DXY_GOLD_BLOCK_CACHE = _DXY_BIAS_CACHE == "BULLISH"
+    _DXY_CACHE_MONO = time.monotonic()
+    return _DXY_BIAS_CACHE
+
+
+def refresh_dxy_gold_buy_cache() -> bool:
+    """Alias histórico → ``refresh_dxy_bias_cache``."""
+    return refresh_dxy_bias_cache() == "BULLISH"
+
+
+def get_dxy_bias_cached() -> str:
+    """Lectura de bias con TTL (misma política que ``dxy_blocks_gold_buy_cached``)."""
+    if os.environ.get("IA_DXY_FILTER_ENABLE", "0").strip().lower() not in ("1", "true", "yes"):
+        return "OFF"
+    try:
+        ttl = float(os.environ.get("IA_DXY_CACHE_TTL_S", "300").strip() or "300")
+    except ValueError:
+        ttl = 300.0
+    if ttl <= 0 or _DXY_CACHE_MONO <= 0 or (time.monotonic() - _DXY_CACHE_MONO) > ttl:
+        return refresh_dxy_bias_cache()
+    return _DXY_BIAS_CACHE
+
+
+def dxy_blocks_gold_buy_cached(gold_symbol: str) -> bool:
+    """Lectura rápida en hot path; delega en ``ia_asset_profile.dxy_blocks_buy``."""
+    from ia_asset_profile import dxy_blocks_buy
+
+    return dxy_blocks_buy(gold_symbol)
+
+
+def dxy_blocks_gold_buy(symbol: str) -> bool:
+    """
+    Recalcula bias DXY y devuelve si bloquea COMPRA para ``symbol`` (multi-activo).
+    En envío caliente preferir ``dxy_blocks_gold_buy_cached`` (sin recalcular).
+    """
+    refresh_dxy_bias_cache()
+    from ia_asset_profile import dxy_blocks_buy
+
+    return dxy_blocks_buy(symbol)
 
 
 def dxy_context_for_alert() -> str:
@@ -179,6 +267,32 @@ def session_context_for_alert() -> str:
     if pro_session_allows_order():
         return "Ventana liquidez: ABIERTA"
     return "Ventana liquidez: CERRADA"
+
+
+def _sl_respects_stops_level(
+    *,
+    typ: int,
+    ref_price: float,
+    new_sl: float,
+    point: float,
+    stops_level: int,
+) -> bool:
+    """
+    Valida distancia mínima bróker antes de TRADE_ACTION_SLTP (evita retcode Invalid Stops).
+    """
+    if ref_price <= 0 or new_sl <= 0 or point <= 0:
+        return False
+    min_dist = float(max(0, int(stops_level))) * point
+    if min_dist <= 0:
+        return True
+    gap = abs(ref_price - new_sl)
+    if gap < min_dist - point * 0.05:
+        return False
+    if typ == mt5.POSITION_TYPE_BUY:
+        return new_sl < ref_price - min_dist * 0.99
+    if typ == mt5.POSITION_TYPE_SELL:
+        return new_sl > ref_price + min_dist * 0.99
+    return False
 
 
 def _initial_risk_price(position) -> float | None:
@@ -221,6 +335,189 @@ def _atr_last(symbol: str, tf: int, period: int, bars: int = 120) -> float | Non
     if not ser:
         return None
     return float(ser[-1])
+
+
+def gestionar_trailing_autonomo(
+    posicion,
+    atr_m15_cerrado: float,
+    multiplicador_trail: float = 2.0,
+) -> bool:
+    """
+    Trailing ATR M15 sobre la vela cerrada (misma política que ``manage_position_expert``).
+
+    Usa precio de cierre M15, no tick en vivo, para evitar whipsaw intra-vela.
+    """
+    if atr_m15_cerrado <= 0:
+        return False
+    sym = str(getattr(posicion, "symbol", "") or "")
+    try:
+        atr_period = int(os.environ.get("IA_AUTO_ATR_PERIOD", "14").strip() or "14")
+    except ValueError:
+        atr_period = 14
+    trigger = {"close": 0.0, "atr": float(atr_m15_cerrado)}
+    pack = fetch_rates(sym, mt5.TIMEFRAME_M15, 5)
+    if pack is not None:
+        _h, _l, closes = pack
+        if closes:
+            trigger["close"] = float(closes[-2] if len(closes) >= 2 else closes[-1])
+    if trigger["close"] <= 0:
+        tick = mt5.symbol_info_tick(sym)
+        if tick is None:
+            return False
+        typ = int(getattr(posicion, "type", -1))
+        trigger["close"] = float(
+            getattr(tick, "bid", 0) if typ == mt5.POSITION_TYPE_BUY else getattr(tick, "ask", 0)
+        )
+    return manage_position_expert(
+        posicion,
+        trail_mult=float(multiplicador_trail),
+        be_trigger_rr=1.0,
+        be_buffer_pts=0.0,
+        trailing_mode=True,
+        trigger=trigger,
+    )
+
+
+def _tp_lock_enabled() -> bool:
+    return os.environ.get("IA_TP_LOCK_ENABLE", "1").strip().lower() in ("1", "true", "yes")
+
+
+def _tp_lock_progress() -> float:
+    try:
+        v = float(os.environ.get("IA_TP_LOCK_PROGRESS", "0.70").strip() or "0.70")
+    except ValueError:
+        v = 0.70
+    return max(0.50, min(0.95, v))
+
+
+def _tp_lock_sl_fraction() -> float:
+    try:
+        v = float(os.environ.get("IA_TP_LOCK_SL_FRACTION", "0.50").strip() or "0.50")
+    except ValueError:
+        v = 0.50
+    return max(0.10, min(0.90, v))
+
+
+def _tp_lock_interval_s() -> float:
+    try:
+        return max(5.0, float(os.environ.get("IA_TP_LOCK_INTERVAL_S", "30").strip() or "30"))
+    except ValueError:
+        return 30.0
+
+
+def gestionar_salida_rentable(position) -> bool:
+    """
+    Al recorrer ~70% del camino al TP, mueve SL para asegurar ~50% del recorrido objetivo (lock parcial).
+
+    Usa precio actual de la posición; requiere TP > 0. No empeora un SL ya más favorable.
+    """
+    if not _tp_lock_enabled():
+        return False
+
+    sym = str(getattr(position, "symbol", "") or "")
+    info = mt5.symbol_info(sym)
+    if info is None:
+        return False
+    point = float(getattr(info, "point", 0.0) or 0.0)
+    if point <= 0:
+        return False
+
+    typ = int(getattr(position, "type", -1))
+    ticket = int(getattr(position, "ticket", 0) or 0)
+    vol = float(getattr(position, "volume", 0.0) or 0.0)
+    entry = float(getattr(position, "price_open", 0.0) or 0.0)
+    tp = float(getattr(position, "tp", 0.0) or 0.0)
+    cur_sl = float(getattr(position, "sl", 0.0) or 0.0)
+    px = float(getattr(position, "price_current", 0.0) or 0.0)
+
+    if ticket <= 0 or entry <= 0 or tp <= 0 or px <= 0:
+        return False
+    if ticket in _TP_LOCK_DONE:
+        return False
+
+    now_mono = time.time()
+    last_try = _TP_LOCK_LAST_ATTEMPT.get(ticket, 0.0)
+    if now_mono - last_try < _tp_lock_interval_s():
+        return False
+    _TP_LOCK_LAST_ATTEMPT[ticket] = now_mono
+
+    dist_tp = abs(tp - entry)
+    if dist_tp <= point:
+        return False
+
+    progress = _tp_lock_progress()
+    lock_frac = _tp_lock_sl_fraction()
+
+    tick = mt5.symbol_info_tick(sym)
+    if tick is None:
+        return False
+    bid = float(getattr(tick, "bid", 0.0) or 0.0)
+    ask = float(getattr(tick, "ask", 0.0) or 0.0)
+    ref_px = bid if typ == mt5.POSITION_TYPE_BUY else ask
+    if ref_px <= 0:
+        ref_px = px
+    stops_level = int(getattr(info, "trade_stops_level", 0) or 0)
+
+    new_sl: float | None = None
+    if typ == mt5.POSITION_TYPE_BUY:
+        traveled = px - entry
+        if traveled < dist_tp * progress:
+            return False
+        candidate = entry + dist_tp * lock_frac
+        if candidate > cur_sl + point * 0.25:
+            new_sl = candidate
+    elif typ == mt5.POSITION_TYPE_SELL:
+        traveled = entry - px
+        if traveled < dist_tp * progress:
+            return False
+        candidate = entry - dist_tp * lock_frac
+        if cur_sl == 0 or candidate < cur_sl - point * 0.25:
+            new_sl = candidate
+    else:
+        return False
+
+    if new_sl is None:
+        return False
+
+    sl_norm = normalizar_precio(sym, float(new_sl), info=info)
+    if sl_norm is None:
+        return False
+    if not _sl_respects_stops_level(
+        typ=typ,
+        ref_price=ref_px,
+        new_sl=sl_norm,
+        point=point,
+        stops_level=stops_level,
+    ):
+        return False
+
+    req = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "position": ticket,
+        "symbol": sym,
+        "volume": vol,
+        "sl": sl_norm,
+        "tp": tp,
+    }
+    try:
+        from ia_order_async import modify_sltp_tracked
+
+        status, r = modify_sltp_tracked(req, position_ticket=ticket)
+    except Exception:
+        r = mt5.order_send(req)
+        status = "done" if r is not None and int(getattr(r, "retcode", -1)) == mt5.TRADE_RETCODE_DONE else "failed"
+
+    if status == "deferred":
+        return False
+    if status == "done":
+        _TP_LOCK_DONE.add(ticket)
+        print(
+            f"[tp_lock] {sym} ticket={ticket} SL→{sl_norm} "
+            f"(progreso>={progress:.0%} hacia TP, lock {lock_frac:.0%} del objetivo)",
+            flush=True,
+        )
+        return True
+    return False
 
 
 def manage_position_expert(
@@ -272,25 +569,67 @@ def manage_position_expert(
         fav = 0.0
     buf = be_buffer_pts * point
 
+    tick = mt5.symbol_info_tick(sym)
+    if tick is None:
+        return False
+    bid = float(getattr(tick, "bid", 0.0) or 0.0)
+    ask = float(getattr(tick, "ask", 0.0) or 0.0)
+    ref_px = bid if typ == mt5.POSITION_TYPE_BUY else ask
+    if ref_px <= 0:
+        return False
+    stops_level = int(getattr(info, "trade_stops_level", 0) or 0)
+
     new_sl = cur_sl
     changed = False
+    be_changed = False
 
-    # 1) Breakeven (~1R a favor -> SL a entrada +/- buffer para cubrir spread/comision)
+    # 1) Breakeven: RR fijo o distancia en ATR M15 (IA_BE_TRIGGER_MODE=atr)
     if os.environ.get("IA_BE_ENABLE", "0").strip().lower() in ("1", "true", "yes"):
-        if fav >= risk * be_trigger_rr:
+        be_mode = os.environ.get("IA_BE_TRIGGER_MODE", "rr").strip().lower()
+        try:
+            atr_be_mult = float(os.environ.get("IA_BE_ATR_MULT", "1.5").strip() or "1.5")
+        except ValueError:
+            atr_be_mult = 1.5
+        try:
+            atr_trig = float(trigger.get("atr")) if trigger.get("atr") is not None else None
+        except (TypeError, ValueError):
+            atr_trig = None
+        if be_mode == "atr" and atr_trig and atr_trig > 0:
+            be_threshold = atr_trig * atr_be_mult
+        else:
+            be_threshold = risk * be_trigger_rr
+        if fav >= be_threshold:
+            try:
+                from ia_fee_detector import precio_breakeven_ajustado
+
+                be_sl = precio_breakeven_ajustado(
+                    sym,
+                    buy=(typ == mt5.POSITION_TYPE_BUY),
+                    entry_price=op,
+                    volume=vol,
+                    buffer_price=buf,
+                    info=info,
+                )
+            except Exception:
+                be_sl = (op + buf) if typ == mt5.POSITION_TYPE_BUY else (op - buf)
             if typ == mt5.POSITION_TYPE_BUY:
-                be_sl = op + buf
                 if be_sl > cur_sl + point * 0.25:
                     new_sl = max(new_sl, be_sl)
                     changed = True
+                    be_changed = True
             elif typ == mt5.POSITION_TYPE_SELL:
-                be_sl = op - buf
                 if cur_sl == 0 or be_sl < cur_sl - point * 0.25:
                     new_sl = min(cur_sl if cur_sl > 0 else 1e12, be_sl)
                     changed = True
+                    be_changed = True
 
-    # 2) Trailing ATR (TP virtual; solo sube/baja SL a favor)
-    if trailing_mode:
+    # 2) Trailing ATR (omitir en la misma vela si BE movió SL — evita arrastrar BE hacia atrás)
+    pause_trail_after_be = os.environ.get("IA_BE_PAUSE_TRAILING", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if trailing_mode and not (be_changed and pause_trail_after_be):
         try:
             atr = float(trigger.get("atr")) if trigger.get("atr") is not None else None
         except Exception:
@@ -312,7 +651,19 @@ def manage_position_expert(
     if not changed:
         return False
 
-    new_sl = round(float(new_sl), digits)
+    sl_norm = normalizar_precio(sym, float(new_sl), info=info)
+    if sl_norm is None:
+        return False
+    new_sl = sl_norm
+    if not _sl_respects_stops_level(
+        typ=typ,
+        ref_price=ref_px,
+        new_sl=new_sl,
+        point=point,
+        stops_level=stops_level,
+    ):
+        return False
+
     req = {
         "action": mt5.TRADE_ACTION_SLTP,
         "position": ticket,
@@ -321,13 +672,19 @@ def manage_position_expert(
         "sl": new_sl,
         "tp": cur_tp,
     }
-    r = mt5.order_send(req)
-    if r is None:
-        return False
-    rc = int(getattr(r, "retcode", -1))
-    if rc == mt5.TRADE_RETCODE_DONE:
-        return True
-    return False
+    try:
+        from ia_order_async import modify_sltp_tracked
+
+        status, _r = modify_sltp_tracked(req, position_ticket=ticket)
+        if status == "deferred":
+            return False
+        return status == "done"
+    except Exception:
+        r = mt5.order_send(req)
+        if r is None:
+            return False
+        rc = int(getattr(r, "retcode", -1))
+        return rc == mt5.TRADE_RETCODE_DONE
 
 
 def gestionar_posiciones_activas(symbols: list[str]) -> None:
@@ -336,18 +693,28 @@ def gestionar_posiciones_activas(symbols: list[str]) -> None:
 
 
 def manage_all_bot_positions_expert(symbols: list[str]) -> None:
-    """Recorre posiciones BOT_MAGIC en symbols y aplica BE/trailing **solo en cierre M15**."""
+    """Recorre posiciones BOT_MAGIC: lock TP (cada ciclo) y BE/trailing en cierre M15."""
+    try:
+        from ia_order_async import sync_deferred_mt5_states
+
+        sync_deferred_mt5_states(BOT_MAGIC, symbols)
+    except Exception:
+        pass
+    try:
+        from ia_audit_logger import limpiar_pending_huerfanos
+
+        limpiar_pending_huerfanos(BOT_MAGIC)
+    except Exception:
+        pass
+
     be_on = os.environ.get("IA_BE_ENABLE", "0").strip().lower() in ("1", "true", "yes")
-    if not be_on and not _tp_mode_trailing():
+    tp_lock_on = _tp_lock_enabled()
+    if not be_on and not _tp_mode_trailing() and not tp_lock_on:
         return
     try:
         atr_period = int(os.environ.get("IA_AUTO_ATR_PERIOD", "14").strip() or "14")
     except ValueError:
         atr_period = 14
-    try:
-        trail_mult = float(os.environ.get("IA_AUTO_TRAIL_ATR_MULT", "2.5").strip() or "2.5")
-    except ValueError:
-        trail_mult = 2.5
     try:
         be_rr = float(os.environ.get("IA_BE_TRIGGER_RR", "1.0").strip() or "1.0")
     except ValueError:
@@ -362,6 +729,19 @@ def manage_all_bot_positions_expert(symbols: list[str]) -> None:
     if not pos_list:
         return
     sym_set = set(symbols)
+
+    if tp_lock_on:
+        for p in pos_list:
+            if int(getattr(p, "magic", -1) or -1) != BOT_MAGIC:
+                continue
+            s = str(getattr(p, "symbol", "") or "")
+            if not s or s not in sym_set:
+                continue
+            try:
+                gestionar_salida_rentable(p)
+            except Exception:
+                pass
+
     # Agrupar por símbolo para calcular trigger una sola vez por M15 cerrado.
     by_sym: dict[str, list] = {}
     for p in pos_list:
@@ -373,17 +753,24 @@ def manage_all_bot_positions_expert(symbols: list[str]) -> None:
         by_sym.setdefault(s, []).append(p)
 
     for sym, positions in by_sym.items():
+        ts = m15_last_closed_bar_unix(sym)
+        if ts is None or ts <= 0:
+            continue
         trig = _m15_last_closed_trigger(sym, atr_period=atr_period)
         if trig is None:
             continue
-        ts = int(trig.get("time", 0) or 0)
-        if ts <= 0:
-            continue
+        trig_ts = int(trig.get("time", 0) or 0)
+        if trig_ts > 0 and trig_ts != ts:
+            continue  # descalce índice vs time: esperar próximo ciclo
         if _LAST_M15_MANAGED_CLOSE_TS.get(sym) == ts:
             continue  # ya se gestionó este cierre
         _LAST_M15_MANAGED_CLOSE_TS[sym] = ts
 
+        from ia_asset_profile import symbol_trail_atr_mult
+
         for p in positions:
+            sym_p = str(getattr(p, "symbol", "") or sym)
+            trail_mult = symbol_trail_atr_mult(sym_p)
             manage_position_expert(
                 p,
                 trail_mult=trail_mult,

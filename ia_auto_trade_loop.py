@@ -53,8 +53,29 @@ Opcional: precierre fin de semana (gaps) — cierre_viernes.gestionar_precierre_
   IA_WEEKEND_CLOSE_ENABLE=1, IA_WEEKEND_CLOSE_HOUR, IA_WEEKEND_TZ, IA_WEEKEND_RESUME_* (ver cierre_viernes.py).
 Opcional: reporte_semanal.intentar_enviar_reporte_semanal_si_toca — IA_REPORTE_SEMANAL_ENABLE=1,
   sábados hora local IA_REPORTE_SEMANAL_HOUR (ver reporte_semanal.py).
-Opcional: botón pánico Telegram — IA_TELEGRAM_PANIC_ENABLE=1, comandos /DETENER y /INICIAR (ver telegram_listener.py).
+Opcional: botón pánico Telegram — IA_TELEGRAM_PANIC_ENABLE=1, comandos /DETENER, /INICIAR, /STATUS, /BITACORA
+  (solo TELEGRAM_CHAT_ID; ver telegram_listener.py).
 Opcional: IA_AUTO_ALLOW_WINDOWS_SLEEP=1 — permitir suspensión en Windows (default: el bucle la inhibe mientras corre).
+Opcional — Fase 1 / cuenta real (PnL cerrado BOT_MAGIC, moneda de la cuenta):
+  IA_AUTO_DAILY_PROFIT_TARGET_USD=45   — no abre nuevas órdenes si el PnL neto del día (cerrados) >= valor
+  IA_AUTO_DAILY_MAX_LOSS_USD=60       — no abre nuevas órdenes si el PnL neto del día <= -valor
+  IA_AUTO_DAILY_PNL_TZ=America/Argentina/Buenos_Aires  — día calendario para el cómputo anterior
+  IA_AUTO_STOP_LOOP_ON_DAILY_PROFIT=1 — al cumplir meta: sale del bucle ("uno y fuera"); default 0 = solo pausa nuevas entradas
+  IA_AUTO_STOP_LOOP_ON_DAILY_MAX_LOSS=1 — al cumplir tope pérdida: sale del bucle (recomendado 1 en real)
+
+  Lotaje fijo (sin sizing por riesgo): dejá vacíos IA_AUTO_RISK_* y usá IA_AUTO_LOTS=0.04 (o 0.05).
+Opcional — Bitácora Fase 1 (CSV tipo Excel; ia_trading_journal.py, convive con límites diarios):
+  IA_JOURNAL_ENABLE=1
+  IA_JOURNAL_CSV=ia_phase1_journal.csv
+  IA_JOURNAL_STATE=ia_trading_journal_state.json
+  IA_JOURNAL_TZ=   — vacío = misma TZ que IA_AUTO_DAILY_PNL_TZ
+  IA_JOURNAL_USE_EQUITY=0 — 1 = usar equity en lugar de balance
+  IA_JOURNAL_GRAD_USD=1250  IA_JOURNAL_FLOOR_USD=900  IA_JOURNAL_ALERTS=1 (Telegram al cruzar meta/piso)
+  IA_JOURNAL_RESET_ON_START=1 — una sola vez al arrancar el proceso: archiva el CSV actual en journal_backup/,
+    borra el JSON de estado y el contador de día vuelve a 1 desde hoy (demo “desde ahora”). Quitá esta
+    variable del .env después del primer arranque para no respaldar de nuevo cada reinicio.
+  Cuenta real (bitácora nueva): usá otros nombres, p.ej. IA_JOURNAL_CSV=ia_phase1_journal_real.csv y
+    IA_JOURNAL_STATE=ia_trading_journal_state_real.json (sin mezclar con la demo).
 Opcional: tras `python optuna_walkforward.py`, se genera `params_optimized.json` (recomendado; fecha en
   last_optimization_date) más `ia_optuna_best.*`. El bot aplica esos valores sobre el .env al arrancar
   y, por defecto, al inicio de cada ronda de escaneo (IA_OPTUNA_RELOAD_EACH_ROUND=1).
@@ -75,44 +96,57 @@ Riesgo dinámico (recomendado): con IA_AUTO_RISK_BUNDLE_PERCENT / IA_AUTO_RISK_B
 IA_AUTO_RISK_PER_TRADE_PERCENT, el lote se calcula para que, si se activa el SL, la pérdida sea ~ese
 % de la equity. Con IA_AUTO_SL_MODE=atr, un ATR más alto aleja el SL; la pérdida por 1 lote sube y
 el volumen baja — mismo riesgo en dinero (mt5.order_calc_profit sobre 1 lote, precio entrada→SL).
+
 """
 
 from __future__ import annotations
 
 import atexit
 import ctypes
+import json
 import os
 import re
 import sys
 import time
 import csv
-from datetime import date, datetime, time as dt_time, timezone
+from datetime import date, datetime, time as dt_time, timezone, timedelta
 
 import MetaTrader5 as mt5
 
 from pathlib import Path
 
 from local_env import apply_optuna_overrides, load_env_file
+from ia_trading_journal import (
+    journal_add_note,
+    journal_csv_filename,
+    journal_effective_tz,
+    journal_enabled,
+    journal_flush_shutdown,
+    journal_mark_opened_today,
+    journal_tick,
+)
 from ia_scanner_loop import analizar_ia, es_horario_seguro, validate_scan_session_env
 from m15_ma_scan import _resolve_scan_symbol
 from ia_auto_memory import sync_memory_from_mt5, summary_from_csv
 from signal_analysis import _atr_series, _true_ranges
+from ia_asset_profile import dxy_blocks_buy, symbol_sl_atr_mult
 from ia_auto_expert import (
-    dxy_blocks_gold_buy,
     dxy_context_for_alert,
     manage_all_bot_positions_expert,
+    m15_atr_last_closed,
     pro_session_allows_order,
+    refresh_dxy_bias_cache,
     session_context_for_alert,
     shakeout_reentry_window_active,
 )
 from cierre_viernes import gestionar_precierre_fin_de_semana
 from reporte_semanal import intentar_enviar_reporte_semanal_si_toca
-from telegram_listener import (
+from ia_remote_control import (
     cancelar_ordenes_pendientes_bot_panico,
     cerrar_posiciones_panico_ia_auto,
     poll_telegram_panic_commands,
 )
-from telegram_utils import enviar_alerta_telegram
+from ia_notifier import enviar_alerta_telegram, notify_mt5_trade_retcode_if_critical
 from mt5_prices import (
     BOT_MAGIC,
     mt5_copy_rates_from_pos_cached,
@@ -122,8 +156,46 @@ from mt5_prices import (
     _telegram_configured,
     _telegram_send,
     es_spread_valido,
+    closed_positions_pnls_by_magic,
 )
-from ia_risk_manager import calcular_lotaje_dinamico
+from ia_mt5_connection import asegurar_conexion_mt5
+from ia_news_filter import (
+    news_filter_enabled,
+    refresh_high_impact_cache,
+    verificar_bloqueo_por_noticias,
+    describe_active_news_block,
+)
+from ia_auto_optimizer import debe_ejecutar_optuna_semanal, ejecutar_optuna_semanal, optuna_auto_enabled
+from ia_intelligence_layer import (
+    auto_ajuste_spread_por_auditoria,
+    intelligence_allows_trade,
+)
+from ia_audit_logger import (
+    audit_enabled,
+    procesar_cierres_audit,
+    registrar_apertura_desde_orden,
+)
+from ia_trainer import auto_entrenar_modelo_ia, debe_entrenar_ml_semanal, train_auto_enabled
+from ia_risk_manager import calcular_lotaje_dinamico, validar_margen_disponible
+from ia_risk_streak import (
+    apply_streak_to_risk_percent,
+    refresh_streak_risk_state,
+    trading_halted_by_streak,
+    verificar_cortacircuitos,
+)
+from ia_config_bridge import (
+    aplicar_config_en_memoria,
+    inyectar_configuracion_autonoma,
+    snapshot_scanner_config_base,
+)
+from ia_autonomy_notify import (
+    notify_circuit_halt_global,
+    notify_news_shield_active,
+    notify_news_shield_cleared,
+    notify_regime_change,
+)
+from ia_regime_autopilot import actualizar_regimen_autonomo
+from ia_mt5_normalize import normalizar_precio, normalizar_volumen
 from ia_utils import execution_quality_max_mb_from_env, rotar_log_por_tamaño
 from trade_audit import (
     execution_quality_csv_path,
@@ -135,6 +207,222 @@ from trade_audit import (
 
 _IA_PAUSE_POR_COMANDO_TELEGRAM = False
 _LOCK_OWNED = False
+_LOCK_FILE_PATH: Path | None = None
+_IA_DAILY_LIMIT_NOTIFIED_DAY: str | None = None
+_IA_DAILY_LIMIT_NOTIFIED_TAG: str | None = None
+
+
+def _virtual_capital_state_path() -> Path:
+    root = Path(__file__).resolve().parent
+    name = os.environ.get("IA_AUTO_VIRTUAL_CAPITAL_STATE", "").strip() or "ia_virtual_capital.json"
+    p = Path(name)
+    return p if p.is_absolute() else (root / p)
+
+
+def _virtual_capital_enabled() -> bool:
+    return os.environ.get("IA_AUTO_VIRTUAL_CAPITAL_ENABLE", "0").strip().lower() in ("1", "true", "yes")
+
+
+def _day_bounds_utc_trading_day() -> tuple[datetime, datetime]:
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz_name = os.environ.get("IA_AUTO_DAILY_PNL_TZ", "America/Argentina/Buenos_Aires").strip()
+        tz = ZoneInfo(tz_name or "America/Argentina/Buenos_Aires")
+    except Exception:
+        tz = timezone.utc
+    now_local = datetime.now(tz)
+    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+
+
+def _daily_limits_usd_config() -> tuple[float | None, float | None]:
+    pr = os.environ.get("IA_AUTO_DAILY_PROFIT_TARGET_USD", "").strip()
+    lo = os.environ.get("IA_AUTO_DAILY_MAX_LOSS_USD", "").strip()
+    try:
+        pt = float(pr.replace(",", ".")) if pr else None
+    except ValueError:
+        pt = None
+    try:
+        ml = float(lo.replace(",", ".")) if lo else None
+    except ValueError:
+        ml = None
+    if pt is not None and pt <= 0:
+        pt = None
+    if ml is not None and ml <= 0:
+        ml = None
+    return pt, ml
+
+
+def _daily_realized_pnl_bot_account_currency() -> float | None:
+    try:
+        uf, ut = _day_bounds_utc_trading_day()
+        pnls = closed_positions_pnls_by_magic(BOT_MAGIC, uf, ut, history_lookback_days=14)
+        return float(sum(pnls))
+    except Exception:
+        return None
+
+
+def _daily_limit_state() -> tuple[float | None, str | None]:
+    pt, ml = _daily_limits_usd_config()
+    if pt is None and ml is None:
+        return None, None
+    pnl = _daily_realized_pnl_bot_account_currency()
+    if pnl is None:
+        return None, None
+    if pt is not None and pnl >= pt:
+        return pnl, "profit_cap"
+    if ml is not None and pnl <= -ml:
+        return pnl, "loss_cap"
+    return pnl, None
+
+
+def _maybe_reset_daily_notify() -> None:
+    global _IA_DAILY_LIMIT_NOTIFIED_DAY, _IA_DAILY_LIMIT_NOTIFIED_TAG
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz_name = os.environ.get("IA_AUTO_DAILY_PNL_TZ", "America/Argentina/Buenos_Aires").strip()
+        tz = ZoneInfo(tz_name or "America/Argentina/Buenos_Aires")
+        day_key = datetime.now(tz).date().isoformat()
+    except Exception:
+        day_key = date.today().isoformat()
+    if _IA_DAILY_LIMIT_NOTIFIED_DAY != day_key:
+        _IA_DAILY_LIMIT_NOTIFIED_DAY = day_key
+        _IA_DAILY_LIMIT_NOTIFIED_TAG = None
+
+
+def _stop_loop_on_daily_profit() -> bool:
+    return os.environ.get("IA_AUTO_STOP_LOOP_ON_DAILY_PROFIT", "0").strip().lower() in ("1", "true", "yes")
+
+
+def _stop_loop_on_daily_max_loss() -> bool:
+    if not os.environ.get("IA_AUTO_DAILY_MAX_LOSS_USD", "").strip():
+        return False
+    raw = os.environ.get("IA_AUTO_STOP_LOOP_ON_DAILY_MAX_LOSS", "").strip()
+    if raw == "":
+        return True
+    return raw.lower() in ("1", "true", "yes")
+
+
+def _maybe_announce_daily_limit(kind: str, pnl: float) -> None:
+    global _IA_DAILY_LIMIT_NOTIFIED_TAG
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz_name = os.environ.get("IA_AUTO_DAILY_PNL_TZ", "America/Argentina/Buenos_Aires").strip()
+        tz = ZoneInfo(tz_name or "America/Argentina/Buenos_Aires")
+        day_key = datetime.now(tz).date().isoformat()
+    except Exception:
+        day_key = date.today().isoformat()
+    tag = f"{day_key}:{kind}"
+    if _IA_DAILY_LIMIT_NOTIFIED_TAG == tag:
+        return
+    _IA_DAILY_LIMIT_NOTIFIED_TAG = tag
+    if kind == "profit_cap":
+        plain = (
+            f"IA_AUTO límite diario: meta alcanzada; PnL hoy (cerrados BOT_MAGIC) ≈ {pnl:+.2f}. "
+            "Sin nuevas órdenes."
+        )
+        html = (
+            f"<b>IA_AUTO límite diario</b>\nMeta alcanzada: PnL hoy ≈ <code>{pnl:+.2f}</code> "
+            "(cerrados BOT_MAGIC). Sin nuevas órdenes."
+        )
+    else:
+        plain = (
+            f"IA_AUTO límite diario: tope de pérdida; PnL hoy ≈ {pnl:+.2f}. Sin nuevas órdenes."
+        )
+        html = (
+            f"<b>IA_AUTO límite diario</b>\nTope de pérdida: PnL hoy ≈ <code>{pnl:+.2f}</code>. "
+            "Sin nuevas órdenes."
+        )
+    print(plain)
+    try:
+        journal_add_note(
+            "Límite diario: meta de ganancia (sin nuevas entradas)"
+            if kind == "profit_cap"
+            else "Límite diario: tope de pérdida (sin nuevas entradas)"
+        )
+    except Exception:
+        pass
+    try:
+        enviar_alerta_telegram(html)
+    except Exception:
+        pass
+
+
+def _load_or_init_virtual_capital_state() -> dict:
+    """
+    State mínimo:
+      - start_usd: float
+      - start_utc: ISO string (UTC)
+    """
+    p = _virtual_capital_state_path()
+    if p.is_file():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8") or "{}")
+            if isinstance(data, dict) and "start_usd" in data and "start_utc" in data:
+                return data
+        except Exception:
+            pass
+    try:
+        start_usd = float(os.environ.get("IA_AUTO_VIRTUAL_CAPITAL_START_USD", "1000").strip() or "1000")
+    except ValueError:
+        start_usd = 1000.0
+    start_usd = max(1.0, float(start_usd))
+    data = {
+        "start_usd": start_usd,
+        "start_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    try:
+        p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    return data
+
+
+def _virtual_equity_usd_now() -> float | None:
+    """
+    Equity virtual = start_usd + PnL neto (profit+commission+swap) de cierres BOT_MAGIC desde start_utc.
+    Retorna None si no está habilitado.
+    """
+    if not _virtual_capital_enabled():
+        return None
+    st = _load_or_init_virtual_capital_state()
+    try:
+        start_usd = float(st.get("start_usd", 1000.0) or 1000.0)
+    except (TypeError, ValueError):
+        start_usd = 1000.0
+    start_usd = max(1.0, float(start_usd))
+    start_iso = str(st.get("start_utc", "") or "").strip()
+    try:
+        start_dt = datetime.fromisoformat(start_iso)
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        start_dt = datetime.now(timezone.utc) - timedelta(days=3650)
+    now_dt = datetime.now(timezone.utc)
+    try:
+        pnls = closed_positions_pnls_by_magic(BOT_MAGIC, start_dt, now_dt, history_lookback_days=30)
+    except Exception:
+        return None
+    v = start_usd + float(sum(pnls))
+    return max(1.0, float(v))
+
+
+def _effective_risk_percent_for_account(risk_percent_cfg: float, *, account_equity: float) -> float:
+    """
+    Si IA_AUTO_VIRTUAL_CAPITAL_ENABLE=1, interpreta `risk_percent_cfg` como % del capital virtual,
+    y lo traduce al % equivalente sobre la equity real de la cuenta.
+    """
+    if account_equity <= 0:
+        return float(risk_percent_cfg)
+    v_eq = _virtual_equity_usd_now()
+    if v_eq is None:
+        return float(risk_percent_cfg)
+    risk_money = v_eq * (float(risk_percent_cfg) / 100.0)
+    return (risk_money / float(account_equity)) * 100.0
 
 
 def _send_status_telegram() -> None:
@@ -196,6 +484,39 @@ def _send_status_telegram() -> None:
         print(f"[TG] /STATUS error: {e}", file=sys.stderr)
 
 
+def _send_bitacora_telegram() -> None:
+    """
+    Adjunta el CSV de bitácora (/BITACORA). Requiere IA_TELEGRAM_PANIC_ENABLE y credenciales Telegram.
+    """
+    try:
+        from telegram_utils import enviar_alerta_telegram, enviar_documento_telegram
+
+        from ia_trading_journal import journal_csv_absolute_path, journal_effective_tz, journal_enabled
+
+        p = journal_csv_absolute_path()
+        tz = journal_effective_tz()
+        if not p.is_file():
+            hint = ""
+            if not journal_enabled():
+                hint = (
+                    "\n<i>Tip:</i> activá <code>IA_JOURNAL_ENABLE=1</code> y dejá correr el bot "
+                    "al menos un ciclo para crear el CSV."
+                )
+            enviar_alerta_telegram(
+                f"<b>Bitácora</b>\nTodavía no existe <code>{p.name}</code> en disco.{hint}"
+            )
+            return
+        cap = f"Bitácora Fase 1 | TZ {tz} | {p.name}"
+        if enviar_documento_telegram(p, caption=cap[:1024]):
+            return
+        print("[TG] /BITACORA: sendDocument falló", file=sys.stderr)
+        enviar_alerta_telegram(
+            f"[TG] No se pudo adjuntar <code>{p.name}</code>. Revisá consola o tamaño del archivo."
+        )
+    except Exception as e:
+        print(f"[TG] /BITACORA error: {e}", file=sys.stderr)
+
+
 def aplicar_escucha_boton_panico_ia() -> None:
     """
     Polling Telegram (getUpdates). /DETENER desde TELEGRAM_CHAT_ID: opcional cerrar BOT_MAGIC + pausa ciclo.
@@ -212,6 +533,10 @@ def aplicar_escucha_boton_panico_ia() -> None:
 
     if cmd == "STATUS":
         _send_status_telegram()
+        return
+
+    if cmd == "BITACORA":
+        _send_bitacora_telegram()
         return
 
     if cmd == "STOP":
@@ -404,10 +729,16 @@ def _single_instance_lock_path() -> Path:
 
 
 def _release_single_instance_lock() -> None:
-    global _LOCK_OWNED
+    global _LOCK_OWNED, _LOCK_FILE_PATH
     if not _LOCK_OWNED:
         return
-    path = _single_instance_lock_path()
+    path = _LOCK_FILE_PATH
+    if path is None:
+        try:
+            path = _single_instance_lock_path()
+        except NameError:
+            _LOCK_OWNED = False
+            return
     try:
         if path.is_file():
             parts = path.read_text(encoding="utf-8").strip().split()
@@ -416,10 +747,11 @@ def _release_single_instance_lock() -> None:
     except (OSError, ValueError):
         pass
     _LOCK_OWNED = False
+    _LOCK_FILE_PATH = None
 
 
 def _acquire_single_instance_lock() -> None:
-    global _LOCK_OWNED
+    global _LOCK_OWNED, _LOCK_FILE_PATH
     if os.environ.get("IA_AUTO_SINGLE_INSTANCE", "1").strip().lower() in ("0", "false", "no"):
         return
     path = _single_instance_lock_path()
@@ -436,6 +768,7 @@ def _acquire_single_instance_lock() -> None:
             finally:
                 os.close(fd)
             _LOCK_OWNED = True
+            _LOCK_FILE_PATH = path
             atexit.register(_release_single_instance_lock)
             return
         except FileExistsError:
@@ -939,13 +1272,28 @@ def _total_risk_cap_allows_new_order(
         equity=equity,
     )
     if cur_risk_pct is None or new_risk_pct is None:
+        strict = os.environ.get("IA_AUTO_MAX_TOTAL_RISK_STRICT", "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if strict:
+            return False, "no se pudo estimar riesgo (cap estricto activo)"
         return True, ""
 
     after = cur_risk_pct + new_risk_pct
     if after > cap:
+        open_syms = []
+        for p in mt5.positions_get() or []:
+            if int(getattr(p, "magic", -1) or -1) != BOT_MAGIC:
+                continue
+            s = str(getattr(p, "symbol", "") or "")
+            if s and s not in open_syms:
+                open_syms.append(s)
+        sym_note = ",".join(open_syms[:6]) if open_syms else "—"
         return False, (
             f"riesgo_total={after:.2f}% (abierto={cur_risk_pct:.2f}% + nueva={new_risk_pct:.2f}%) "
-            f"> cap {cap:.2f}%"
+            f"> cap {cap:.2f}% | abiertos=[{sym_note}]"
         )
     return True, ""
 
@@ -956,30 +1304,33 @@ def enviar_orden(
     *,
     session_trade_num: int | None = None,
     ia_confidence: int | None = None,
-) -> bool:
+) -> str:
+    """
+    ``"filled"`` mercado ejecutado, ``"pending"`` límite colocado, ``""`` fallo.
+    """
     mt5.symbol_select(simbolo, True)
     info = mt5.symbol_info(simbolo)
     if info is None:
         code, msg = mt5.last_error()
         print(f"Sin symbol_info para {simbolo}. ({code}) {msg}", file=sys.stderr)
-        return False
+        return ""
 
     trade_mode = getattr(info, "trade_mode", None)
     if trade_mode is not None and int(trade_mode) == mt5.SYMBOL_TRADE_MODE_DISABLED:
         print(f"{simbolo}: trading deshabilitado para este símbolo.", file=sys.stderr)
-        return False
+        return ""
 
     tick = mt5.symbol_info_tick(simbolo)
     if tick is None:
         code, msg = mt5.last_error()
         print(f"Sin tick para {simbolo}. ({code}) {msg}", file=sys.stderr)
-        return False
+        return ""
 
     now = time.time()
     tick_time = float(getattr(tick, "time", 0.0) or 0.0)
     if tick_time and (now - tick_time) > 15:
         print(f"{simbolo}: cotización stale (>{now - tick_time:.0f}s). No envío.", file=sys.stderr)
-        return False
+        return ""
 
     lim_sp_raw = os.environ.get(
         "IA_AUTO_MAX_SPREAD_POINTS",
@@ -990,12 +1341,12 @@ def enviar_orden(
     except ValueError:
         lim_sp = 50
     if not es_spread_valido(simbolo, lim_sp):
-        return False
+        return ""
 
     bid = float(getattr(tick, "bid", 0.0) or 0.0)
     ask = float(getattr(tick, "ask", 0.0) or 0.0)
     if bid <= 0 or ask <= 0:
-        return False
+        return ""
 
     sp_pts = _spread_points(info, bid, ask)
     if sp_pts is not None:
@@ -1010,7 +1361,35 @@ def enviar_orden(
                 f"IA_AUTO_SPREAD_DYNAMIC=0 para desactivar.",
                 file=sys.stderr,
             )
-            return False
+            return ""
+
+    halted, halt_why = trading_halted_by_streak()
+    if halted:
+        print(f"{simbolo}: {halt_why}. IA_STREAK_HALT_HOURS o esperar ganador.", file=sys.stderr)
+        return ""
+
+    if news_filter_enabled() and verificar_bloqueo_por_noticias():
+        print(
+            f"{simbolo}: bloqueado por ventana de noticias macro ({describe_active_news_block()}).",
+            file=sys.stderr,
+        )
+        return ""
+
+    ml_ok, _ml_feats = intelligence_allows_trade(simbolo, buy=buy)
+    if not ml_ok:
+        print(f"{simbolo}: filtro ML rechazó la entrada.", file=sys.stderr)
+        return ""
+    if os.environ.get("IA_INDICATORS_LOG", "0").strip().lower() in ("1", "true", "yes"):
+        try:
+            from ia_indicators import obtener_metricas_ia
+
+            adx_log, ema_log = obtener_metricas_ia(simbolo, buy=buy)
+            print(
+                f"[indicators] {simbolo} ADX(M15)={adx_log:.2f} dist_EMA(H4)={ema_log:.3f}%",
+                flush=True,
+            )
+        except Exception:
+            pass
 
     ok_slip, slip_why = slippage_guard_allows_order(simbolo)
     if not ok_slip:
@@ -1019,13 +1398,16 @@ def enviar_orden(
             "IA_EXEC_SLIP_GUARD_ENABLE=0 o subí IA_EXEC_SLIP_GUARD_MAX_AVG_PTS.",
             file=sys.stderr,
         )
-        return False
+        return ""
 
-    price = ask if buy else bid
+    price_market = ask if buy else bid
+    price = price_market
     digits = int(getattr(info, "digits", 5) or 5)
     point = float(getattr(info, "point", 0.0) or 0.0)
     stops_level = int(getattr(info, "trade_stops_level", 0) or 0)
     min_dist = float(stops_level) * point if stops_level > 0 and point > 0 else 0.0
+    use_limit_entry = False
+    limit_expiration = 0
 
     try:
         rr = float(os.environ.get("RR", "2").strip() or "2")
@@ -1037,36 +1419,33 @@ def enviar_orden(
 
     if not pro_session_allows_order():
         print(f"{simbolo}: fuera de ventana IA_PRO_SESSION_* (sesion bancaria).", file=sys.stderr)
-        return False
+        return ""
 
     sl_mode = os.environ.get("IA_AUTO_SL_MODE", "percent").strip().lower()
     sl_dist = 0.0
-    if sl_mode in ("atr", "atr_m5"):
+    if sl_mode in ("atr", "atr_m15", "atr_m5"):
         try:
             atr_period = int(os.environ.get("IA_AUTO_ATR_PERIOD", "14").strip() or "14")
         except ValueError:
             atr_period = 14
-        try:
-            atr_mult = float(
-                os.environ.get(
-                    "IA_AUTO_SL_ATR_MULT",
-                    os.environ.get("IA_ATR_SL_MULT", "1.6"),
-                ).strip()
-                or "1.6"
-            )
-        except ValueError:
-            atr_mult = 1.6
-        m5 = mt5_copy_rates_from_pos_cached(simbolo, mt5.TIMEFRAME_M5, 0, 400)
-        if m5 is None or len(m5) < atr_period + 10:
-            return False
-        highs0 = [float(r["high"]) for r in m5]
-        lows0 = [float(r["low"]) for r in m5]
-        closes0 = [float(r["close"]) for r in m5]
-        trs0 = _true_ranges(highs0, lows0, closes0)
-        ser = _atr_series(trs0, atr_period)
-        if not ser:
-            return False
-        atr = float(ser[-1])
+        atr_mult = symbol_sl_atr_mult(simbolo)
+        if sl_mode == "atr_m5":
+            m5 = mt5_copy_rates_from_pos_cached(simbolo, mt5.TIMEFRAME_M5, 0, 400)
+            if m5 is None or len(m5) < atr_period + 10:
+                return ""
+            highs0 = [float(r["high"]) for r in m5]
+            lows0 = [float(r["low"]) for r in m5]
+            closes0 = [float(r["close"]) for r in m5]
+            trs0 = _true_ranges(highs0, lows0, closes0)
+            ser = _atr_series(trs0, atr_period)
+            if not ser:
+                return ""
+            atr = float(ser[-1])
+        else:
+            # atr / atr_m15: mismo marco que gatillo y gestión activa (M15 vela cerrada)
+            atr = m15_atr_last_closed(simbolo, atr_period=atr_period)
+            if atr is None:
+                return ""
         sl_dist = max(atr * atr_mult, min_dist)
     else:
         try:
@@ -1076,33 +1455,90 @@ def enviar_orden(
         sl_pct = max(1e-12, min(sl_pct, 0.99))
         sl_dist = max(price * sl_pct, min_dist)
     tp_dist = sl_dist * rr
+    typ = mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL
+    trade_action = mt5.TRADE_ACTION_DEAL
+
+    try:
+        from ia_limit_entry import (
+            calcular_entrada_limite_eficiente,
+            expiration_unix_after_m15_bars,
+            limit_entry_enabled,
+            limite_precio_valido,
+            m15_close_last,
+            _fallback_market,
+        )
+
+        if limit_entry_enabled():
+            try:
+                atr_period_lim = int(os.environ.get("IA_AUTO_ATR_PERIOD", "14").strip() or "14")
+            except ValueError:
+                atr_period_lim = 14
+            atr_lim = m15_atr_last_closed(simbolo, atr_period=atr_period_lim)
+            if atr_lim is None or atr_lim <= 0:
+                atr_lim = sl_dist if sl_dist > 0 else min_dist
+            m15_c = m15_close_last(simbolo) or price_market
+            lim_typ, lim_px = calcular_entrada_limite_eficiente(
+                simbolo,
+                "BUY" if buy else "SELL",
+                m15_c,
+                float(atr_lim),
+                info=info,
+            )
+            if limite_precio_valido(simbolo, buy, lim_px, info=info):
+                use_limit_entry = True
+                trade_action = mt5.TRADE_ACTION_PENDING
+                typ = lim_typ
+                price = lim_px
+                limit_expiration = expiration_unix_after_m15_bars(simbolo) or 0
+            elif not _fallback_market():
+                print(
+                    f"{simbolo}: precio límite inválido vs mercado; IA_LIMIT_FALLBACK_MARKET=0.",
+                    file=sys.stderr,
+                )
+                return ""
+    except Exception as e:
+        print(f"[limit] {e}", file=sys.stderr)
+
     if buy:
         sl = price - sl_dist
         tp = (price + tp_dist) if not use_trailing_tp else 0.0
-        typ = mt5.ORDER_TYPE_BUY
     else:
         sl = price + sl_dist
         tp = (price - tp_dist) if not use_trailing_tp else 0.0
-        typ = mt5.ORDER_TYPE_SELL
 
-    if buy and dxy_blocks_gold_buy(simbolo):
-        print(f"{simbolo}: filtro DXY bloquea COMPRAS (indice alcista).", file=sys.stderr)
-        return False
+    if buy and dxy_blocks_buy(simbolo):
+        from ia_asset_profile import dxy_context_line
 
-    sl = round(float(sl), digits)
+        print(
+            f"{simbolo}: filtro DXY bloquea COMPRA ({dxy_context_line(simbolo)}).",
+            file=sys.stderr,
+        )
+        return ""
+
+    sl_n = normalizar_precio(simbolo, float(sl), info=info)
+    if sl_n is None:
+        return ""
+    sl = sl_n
     if use_trailing_tp:
         tp = 0.0
     else:
-        tp = round(float(tp), digits)
+        tp_n = normalizar_precio(simbolo, float(tp), info=info)
+        if tp_n is None:
+            return ""
+        tp = tp_n
 
     rper = _risk_percent_per_trade()
     if rper is not None:
+        acct = mt5.account_info()
+        equity_now = float(getattr(acct, "equity", 0.0) or 0.0) if acct is not None else 0.0
+        rper_eff = _effective_risk_percent_for_account(float(rper), account_equity=equity_now)
+        rper_eff = apply_streak_to_risk_percent(rper_eff)
         vcalc = calcular_lotaje_dinamico(
             simbolo,
             buy=buy,
             entry_price=price,
             sl_price=sl,
-            riesgo_percent=rper,
+            riesgo_percent=rper_eff,
             info=info,
         )
         if vcalc is None:
@@ -1111,16 +1547,23 @@ def enviar_orden(
                 "usá IA_AUTO_LOTS o revisá símbolo.",
                 file=sys.stderr,
             )
-            return False
+            return ""
         vol = vcalc
+        vol_n = normalizar_volumen(simbolo, vol, info=info)
+        if vol_n is not None:
+            vol = vol_n
     else:
         raw_vol = float(os.environ.get("IA_AUTO_LOTS", "0.01"))
-        vol_step = float(getattr(info, "volume_step", 0.01) or 0.01)
-        vol_min = float(getattr(info, "volume_min", 0.01) or 0.01)
-        vol = max(vol_min, _round_down_to_step(raw_vol, vol_step))
-        vol_max = float(getattr(info, "volume_max", 0.0) or 0.0)
-        if vol_max > 0:
-            vol = min(vol, vol_max)
+        vol_n = normalizar_volumen(simbolo, raw_vol, info=info)
+        if vol_n is None:
+            vol_step = float(getattr(info, "volume_step", 0.01) or 0.01)
+            vol_min = float(getattr(info, "volume_min", 0.01) or 0.01)
+            vol = max(vol_min, _round_down_to_step(raw_vol, vol_step))
+            vol_max = float(getattr(info, "volume_max", 0.0) or 0.0)
+            if vol_max > 0:
+                vol = min(vol, vol_max)
+        else:
+            vol = vol_n
 
     ok_cap, why_cap = _total_risk_cap_allows_new_order(
         simbolo=simbolo,
@@ -1131,15 +1574,74 @@ def enviar_orden(
     )
     if not ok_cap:
         print(f"[RISK_CAP] Orden cancelada: {simbolo} {why_cap}", file=sys.stderr)
-        return False
+        return ""
+
+    ok_margin, why_margin = validar_margen_disponible(
+        simbolo,
+        buy=buy,
+        volume=float(vol),
+        entry_price=float(price),
+        sl_price=float(sl),
+        tp_price=float(tp),
+    )
+    if not ok_margin:
+        print(f"{simbolo}: margen insuficiente ({why_margin}).", file=sys.stderr)
+        return ""
 
     deviation = int(os.environ.get("DEVIATION", os.environ.get("IA_AUTO_DEVIATION", "20")))
     comment = (os.environ.get("IA_AUTO_COMMENT") or "IA_AUTO")[:31]
-    filling_modes = _allowed_filling_modes_symbol(simbolo)
+    try:
+        from ia_order_execution import obtener_tipo_llenado_broker, prioridad_filling_modes
+
+        filling_modes = prioridad_filling_modes(simbolo)
+        _fill_primary = obtener_tipo_llenado_broker(simbolo)
+    except Exception:
+        filling_modes = _allowed_filling_modes_symbol(simbolo)
+        _fill_primary = filling_modes[0] if filling_modes else int(
+            getattr(mt5, "ORDER_FILLING_FOK", 0)
+        )
+    if filling_modes and filling_modes[0] != _fill_primary and _fill_primary in filling_modes:
+        filling_modes = [_fill_primary] + [m for m in filling_modes if m != _fill_primary]
+
+    if use_limit_entry:
+        try:
+            from ia_limit_entry import limit_pending_blocks
+
+            blocked, why_lim = limit_pending_blocks(simbolo)
+            if blocked:
+                print(f"{simbolo}: {why_lim}", file=sys.stderr)
+                return ""
+        except Exception as e:
+            print(f"[limit] {e}", file=sys.stderr)
+
+        import MetaTrader5 as mt5
+
+        filling_modes = [int(getattr(mt5, "ORDER_FILLING_RETURN", 2))]
+        try:
+            from ia_order_execution import prioridad_filling_modes
+
+            for fm in prioridad_filling_modes(simbolo):
+                if fm not in filling_modes:
+                    filling_modes.append(fm)
+        except Exception:
+            pass
+
+    try:
+        from ia_order_async import order_async_enabled, _max_fill_retries
+
+        if order_async_enabled():
+            filling_modes = filling_modes[: _max_fill_retries()]
+    except Exception:
+        pass
 
     for fm in filling_modes:
+        type_time = (
+            mt5.ORDER_TIME_SPECIFIED
+            if use_limit_entry and limit_expiration > 0
+            else mt5.ORDER_TIME_GTC
+        )
         request = {
-            "action": mt5.TRADE_ACTION_DEAL,
+            "action": trade_action,
             "symbol": simbolo,
             "volume": float(vol),
             "type": typ,
@@ -1149,16 +1651,41 @@ def enviar_orden(
             "deviation": deviation,
             "magic": BOT_MAGIC,
             "comment": comment,
-            "type_time": mt5.ORDER_TIME_GTC,
+            "type_time": type_time,
             "type_filling": int(fm),
         }
-        result = mt5.order_send(request)
+        if use_limit_entry and limit_expiration > 0:
+            request["expiration"] = int(limit_expiration)
+        try:
+            from ia_order_async import order_async_enabled, order_send_tracked
+
+            if order_async_enabled():
+                status, result = order_send_tracked(request)
+                if status == "deferred" and result is not None:
+                    order_id = int(getattr(result, "order", 0) or 0)
+                    if order_id > 0:
+                        print(
+                            f"{simbolo}: orden diferida ticket={order_id}; se verifica en la siguiente ronda.",
+                            flush=True,
+                        )
+                        return "pending"
+                if status == "failed":
+                    result = None
+            else:
+                status, result = "legacy", mt5.order_send(request)
+        except Exception:
+            status, result = "legacy", mt5.order_send(request)
+
         if result is None:
             code, msg = mt5.last_error()
             print(f"order_send=None ({code}) {msg}", file=sys.stderr)
             continue
         retcode = int(getattr(result, "retcode", -1))
-        if getattr(result, "deal", 0) or getattr(result, "order", 0):
+        deal_id = int(getattr(result, "deal", 0) or 0)
+        order_id = int(getattr(result, "order", 0) or 0)
+        filled_market = deal_id > 0
+        placed_pending = use_limit_entry and order_id > 0 and not filled_market
+        if filled_market or placed_pending:
             side = "COMPRA" if buy else "VENTA"
             px_exec = getattr(result, "price", None)
             if px_exec is not None:
@@ -1166,37 +1693,66 @@ def enviar_orden(
                     px_exec = float(px_exec)
                 except (TypeError, ValueError):
                     px_exec = None
-            log_execution_quality(
-                symbol=simbolo,
-                side=side,
-                price_requested=float(price),
-                price_executed=px_exec,
-                spread_points=float(sp_pts) if sp_pts is not None else None,
-                retcode=retcode,
-                volume=float(vol),
-                deal=int(getattr(result, "deal", 0) or 0),
-                symbol_point=float(point) if point and point > 0 else None,
-            )
-            print(f"Orden enviada: {simbolo} {side} vol={vol} SL={sl:.5f} TP={tp:.5f}")
-            _notify_trade_telegram(
-                simbolo,
-                side,
-                vol,
-                price,
-                sl,
-                tp,
-                result,
-                session_trade_num,
-                ia_confidence=ia_confidence,
-                trailing_tp=use_trailing_tp,
-            )
-            return True
+            if filled_market:
+                log_execution_quality(
+                    symbol=simbolo,
+                    side=side,
+                    price_requested=float(price_market),
+                    price_executed=px_exec,
+                    spread_points=float(sp_pts) if sp_pts is not None else None,
+                    retcode=retcode,
+                    volume=float(vol),
+                    deal=deal_id,
+                    symbol_point=float(point) if point and point > 0 else None,
+                )
+            if placed_pending:
+                print(
+                    f"Límite colocado: {simbolo} {side} @ {price:.5f} vol={vol} "
+                    f"exp={limit_expiration} ticket={order_id}",
+                    flush=True,
+                )
+            else:
+                print(f"Orden enviada: {simbolo} {side} vol={vol} SL={sl:.5f} TP={tp:.5f}")
+            if filled_market:
+                _notify_trade_telegram(
+                    simbolo,
+                    side,
+                    vol,
+                    price,
+                    sl,
+                    tp,
+                    result,
+                    session_trade_num,
+                    ia_confidence=ia_confidence,
+                    trailing_tp=use_trailing_tp,
+                )
+                try:
+                    journal_mark_opened_today()
+                except Exception:
+                    pass
+                if audit_enabled():
+                    try:
+                        registrar_apertura_desde_orden(
+                            simbolo,
+                            buy=buy,
+                            volume=float(vol),
+                            entry_price=float(px_exec if px_exec is not None else price),
+                            order_result=result,
+                        )
+                    except Exception as e:
+                        print(f"[audit] {e}", file=sys.stderr)
+            return "filled" if filled_market else "pending"
+        comment = str(getattr(result, "comment", "") or "")
         print(
-            f"Rechazado filling={fm} retcode={retcode} comment={getattr(result, 'comment', '')}",
+            f"Rechazado filling={fm} retcode={retcode} comment={comment}",
             file=sys.stderr,
         )
+        try:
+            notify_mt5_trade_retcode_if_critical(simbolo, retcode, comment)
+        except Exception as e:
+            print(f"[TG] retcode: {e}", file=sys.stderr)
 
-    return False
+    return ""
 
 
 def main() -> None:
@@ -1289,8 +1845,17 @@ def main() -> None:
         else:
             telegram_report = tg_raw in ("1", "true", "yes")
 
+        acct_banner = "?"
+        try:
+            ac_b = mt5.account_info()
+            if ac_b is not None:
+                srv_b = str(getattr(ac_b, "server", "") or "")
+                acct_banner = "DEMO" if "DEMO" in srv_b.upper() else "REAL"
+        except Exception:
+            pass
+
         print(
-            f"Auto-trading DEMO | simbolos={len(resolved_map)} | intervalo={interval}s | "
+            f"Auto-trading ({acct_banner}) | simbolos={len(resolved_map)} | intervalo={interval}s | "
             f"cooldown tras orden={cooldown}s | multi/ronda={multi_per_round} | "
             f"burst={burst_delay}s | stack mismo simbolo={stack_same_symbol} | Ctrl+C salir"
             + (
@@ -1314,7 +1879,8 @@ def main() -> None:
                 am = os.environ.get("IA_AUTO_SL_ATR_MULT", "1.6")
                 print(
                     f"Riesgo objetivo ~{rpt:.2f}% equity por operacion |{bundle_note} "
-                    f"lote dinamico (order_calc_profit): SL = ATR M5 x {am} "
+                    f"lote dinamico (oro: contract_size+apalancamiento; resto: order_calc_profit): "
+                    f"SL = ATR M5 x {am} "
                     f"(mas volatilidad -> SL mas lejos -> menos lote) | RR {rr_d}"
                 )
             else:
@@ -1326,6 +1892,28 @@ def main() -> None:
         else:
             lots_d = os.environ.get("IA_AUTO_LOTS", "0.01")
             print(f"Volumen fijo IA_AUTO_LOTS={lots_d} | SL {sl_d}% | RR {rr_d}")
+
+        pt_d, ml_d = _daily_limits_usd_config()
+        if pt_d is not None or ml_d is not None:
+            tz_b = os.environ.get("IA_AUTO_DAILY_PNL_TZ", "America/Argentina/Buenos_Aires").strip()
+            parts: list[str] = []
+            if pt_d is not None:
+                parts.append(f"meta PnL cerrado >= {pt_d:.0f} -> sin nuevas entradas")
+            if ml_d is not None:
+                parts.append(f"max pérdida diaria {ml_d:.0f} -> sin nuevas entradas")
+            ex: list[str] = []
+            if _stop_loop_on_daily_profit():
+                ex.append("salir del bucle al cumplir meta")
+            if ml_d is not None and _stop_loop_on_daily_max_loss():
+                ex.append("salir del bucle al tope pérdida")
+            sfx = f" | {'; '.join(ex)}" if ex else ""
+            print(f"Límites diarios (TZ {tz_b or 'UTC'}): {' | '.join(parts)}{sfx}")
+
+        if journal_enabled():
+            print(
+                f"Bitácora Fase 1: CSV {journal_csv_filename()} | TZ {journal_effective_tz()} "
+                f"(IA_JOURNAL_ENABLE=1)"
+            )
 
         if deadline_local is not None and datetime.now() >= deadline_local:
             print(
@@ -1349,7 +1937,103 @@ def main() -> None:
 
         relax_ctx: dict = {"level": 0}
 
+        try:
+            from ia_filesystem import inicializar_entorno_directorios
+
+            inicializar_entorno_directorios()
+        except Exception as e:
+            print(f"[fs] {e}", file=sys.stderr)
+
+        try:
+            from ia_welcome import enviar_reporte_bienvenida
+
+            enviar_reporte_bienvenida(BOT_MAGIC)
+        except Exception as e:
+            print(f"[welcome] {e}", file=sys.stderr)
+
         while True:
+            try:
+                if not asegurar_conexion_mt5():
+                    try:
+                        fail_sleep = float(
+                            os.environ.get("IA_MT5_RECONNECT_FAIL_SLEEP_S", "60").strip() or "60"
+                        )
+                    except ValueError:
+                        fail_sleep = 60.0
+                    time.sleep(max(5.0, fail_sleep))
+                    continue
+            except ConnectionError as e:
+                print(f"[MT5] {e}", file=sys.stderr)
+                break
+
+            try:
+                from ia_friday_closure import ejecutar_cierre_viernes_autonomo
+
+                if ejecutar_cierre_viernes_autonomo(BOT_MAGIC):
+                    try:
+                        fr_sl = float(os.environ.get("IA_FRIDAY_LOOP_SLEEP_S", "60").strip() or "60")
+                    except ValueError:
+                        fr_sl = 60.0
+                    print(
+                        f"[friday] Pausa fin de semana (sin scanner); proxima vuelta en ~{fr_sl:.0f}s",
+                        flush=True,
+                    )
+                    time.sleep(max(5.0, fr_sl))
+                    continue
+            except Exception as e:
+                print(f"[friday] {e}", file=sys.stderr)
+
+            saturday_maint_ran = False
+            try:
+                from ia_data_maintenance import ejecutar_mantenimiento_sabado_si_toca
+
+                if ejecutar_mantenimiento_sabado_si_toca():
+                    saturday_maint_ran = True
+                    print("[maintenance] Purga sabado completada; sigue Optuna si toca.", flush=True)
+            except Exception as e:
+                print(f"[maintenance] {e}", file=sys.stderr)
+
+            optuna_ran_this_cycle = False
+            if optuna_auto_enabled() and debe_ejecutar_optuna_semanal():
+                try:
+                    print("[optuna-auto] Iniciando optimización semanal…", flush=True)
+                    best_opt = ejecutar_optuna_semanal(
+                        resolved_symbols_only[0] if resolved_symbols_only else None,
+                        manage_mt5=False,
+                    )
+                    if best_opt is None:
+                        print(
+                            "[optuna-auto] OOS no aprobó; se mantienen parámetros actuales.",
+                            flush=True,
+                        )
+                    applied_opt = cargar_configuracion_optimizada()
+                    if applied_opt and best_opt is not None:
+                        print(f"[optuna-auto] Aplicados {len(applied_opt)} parámetros.", flush=True)
+                    optuna_ran_this_cycle = True
+                except Exception as e:
+                    print(f"[optuna-auto] {e}", file=sys.stderr)
+
+            if saturday_maint_ran or optuna_ran_this_cycle:
+                try:
+                    sat_sl = float(os.environ.get("IA_SAT_MAINTENANCE_SLEEP_S", "3600").strip() or "3600")
+                except ValueError:
+                    sat_sl = 3600.0
+                if sat_sl > 0:
+                    print(
+                        f"[maintenance] Pausa post-sabado (~{sat_sl:.0f}s) tras purga/Optuna.",
+                        flush=True,
+                    )
+                    time.sleep(sat_sl)
+                    continue
+
+            if train_auto_enabled() and debe_entrenar_ml_semanal():
+                try:
+                    procesar_cierres_audit(BOT_MAGIC)
+                    if auto_entrenar_modelo_ia():
+                        print("[trainer] Modelo ML actualizado.", flush=True)
+                except Exception as e:
+                    print(f"[trainer] {e}", file=sys.stderr)
+
             if os.environ.get("IA_OPTUNA_RELOAD_EACH_ROUND", "1").strip().lower() not in (
                 "0",
                 "false",
@@ -1357,11 +2041,63 @@ def main() -> None:
             ):
                 cargar_configuracion_optimizada()
 
+            try:
+                auto_ajuste_spread_por_auditoria()
+            except Exception as e:
+                print(f"[autotune] {e}", file=sys.stderr)
+
+            if audit_enabled():
+                try:
+                    n_audit = procesar_cierres_audit(BOT_MAGIC)
+                    if n_audit > 0:
+                        print(f"[audit] {n_audit} cierre(s) añadidos al dataset ML.", flush=True)
+                except Exception as e:
+                    print(f"[audit] {e}", file=sys.stderr)
+
+            try:
+                journal_tick()
+            except Exception as e:
+                print(f"[bitácora] {e}", file=sys.stderr)
+
             if "mom_br_base" not in relax_ctx:
                 relax_ctx["mom_br_base"] = os.environ.get(
                     "IA_M15_MOMENTUM_MIN_BODY_RATIO", "0.45"
                 )
                 relax_ctx["block_hv_base"] = os.environ.get("IA_REGIME_BLOCK_HIGH_VOL", "1")
+            if "regime_last" not in relax_ctx:
+                relax_ctx["regime_last"] = {}
+            if "news_shield_alert" not in relax_ctx:
+                relax_ctx["news_shield_alert"] = False
+
+            if news_filter_enabled():
+                try:
+                    refresh_high_impact_cache()
+                except Exception as e:
+                    print(f"[news] {e}", file=sys.stderr)
+                if verificar_bloqueo_por_noticias():
+                    if not relax_ctx.get("news_shield_alert"):
+                        try:
+                            notify_news_shield_active(describe_active_news_block())
+                        except Exception as e:
+                            print(f"[TG] news: {e}", file=sys.stderr)
+                        relax_ctx["news_shield_alert"] = True
+                        print("[news] Escudo activo: scanner pausado (gestión de posiciones sigue).")
+                    try:
+                        manage_all_bot_positions_expert(resolved_symbols_only)
+                    except Exception as e:
+                        print(f"[pos-mgmt] {e}", file=sys.stderr)
+                    try:
+                        news_sleep = float(os.environ.get("IA_NEWS_LOOP_SLEEP_S", "10").strip() or "10")
+                    except ValueError:
+                        news_sleep = 10.0
+                    time.sleep(max(3.0, news_sleep))
+                    continue
+                if relax_ctx.get("news_shield_alert"):
+                    try:
+                        notify_news_shield_cleared()
+                    except Exception as e:
+                        print(f"[TG] news: {e}", file=sys.stderr)
+                    relax_ctx["news_shield_alert"] = False
 
             try:
                 _mx_log = execution_quality_max_mb_from_env()
@@ -1369,6 +2105,46 @@ def main() -> None:
                     rotar_log_por_tamaño(execution_quality_csv_path(), _mx_log)
             except Exception:
                 pass
+
+            try:
+                from ia_order_cleaner import limpiar_ordenes_limite_vencidas
+
+                n_lim = limpiar_ordenes_limite_vencidas(resolved_symbols_only, BOT_MAGIC)
+                if n_lim > 0:
+                    print(f"[cleaner] {n_lim} orden(es) límite cancelada(s).", flush=True)
+            except Exception as e:
+                print(f"[cleaner] {e}", file=sys.stderr)
+
+            try:
+                bias = refresh_dxy_bias_cache()
+                if bias not in ("OFF", "NEUTRAL", "UNKNOWN"):
+                    print(f"[DXY] bias={bias}")
+            except Exception:
+                pass
+
+            try:
+                streak_snap = refresh_streak_risk_state()
+                if streak_snap.get("enabled") and int(streak_snap.get("streak", 0) or 0) > 0:
+                    print(
+                        f"[streak] pérdidas seguidas={streak_snap.get('streak')} "
+                        f"mult_riesgo={streak_snap.get('mult')}"
+                    )
+            except Exception:
+                pass
+
+            halted_cycle, halt_cycle_why = trading_halted_by_streak()
+            if halted_cycle:
+                print(f"[cortacircuitos] Ciclo pausado: {halt_cycle_why}")
+                try:
+                    notify_circuit_halt_global(halt_cycle_why)
+                except Exception as e:
+                    print(f"[TG] {e}", file=sys.stderr)
+                try:
+                    manage_all_bot_positions_expert(resolved_symbols_only)
+                except Exception as e:
+                    print(f"[pos-mgmt] {e}", file=sys.stderr)
+                time.sleep(max(float(interval), 5.0))
+                continue
 
             if trades_sent_session > 0 and int(relax_ctx.get("level", 0)) > 0:
                 print("[auto-relax] reinicio tras orden; niveles de relajación a cero.")
@@ -1400,7 +2176,17 @@ def main() -> None:
                 print(f"[pos-mgmt] {e}", file=sys.stderr)
 
             try:
-                if gestionar_precierre_fin_de_semana():
+                friday_on = os.environ.get("IA_FRIDAY_CLOSE_ENABLE", "1").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                weekend_legacy = os.environ.get("IA_WEEKEND_CLOSE_ENABLE", "0").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                if (not friday_on) and weekend_legacy and gestionar_precierre_fin_de_semana():
                     try:
                         wk_sl = float(os.environ.get("IA_WEEKEND_LOOP_SLEEP_S", "").strip() or "0")
                     except ValueError:
@@ -1435,12 +2221,55 @@ def main() -> None:
                 time.sleep(interval)
                 continue
 
+            _maybe_reset_daily_notify()
+            pnl_d, lim_k = _daily_limit_state()
+            if lim_k is not None and pnl_d is not None:
+                _maybe_announce_daily_limit(lim_k, pnl_d)
+                stop_p = lim_k == "profit_cap" and _stop_loop_on_daily_profit()
+                stop_l = lim_k == "loss_cap" and _stop_loop_on_daily_max_loss()
+                if stop_p or stop_l:
+                    lab = "meta diaria" if stop_p else "tope pérdida diaria"
+                    print(f"Fin bucle: {lab}.")
+                    break
+                time.sleep(max(float(interval), 5.0))
+                continue
+
             traded_this_round = False
             for requested, sym in resolved_map:
                 if not stack_same_symbol and _position_side_for_bot(sym) is not None:
                     continue
 
-                sig = analizar_ia(sym)
+                if not verificar_cortacircuitos(sym, magic_number=BOT_MAGIC):
+                    continue
+
+                config_ejecucion: dict = {}
+                try:
+                    regime_label, rr_auto = actualizar_regimen_autonomo(sym)
+                    config_ejecucion = inyectar_configuracion_autonoma(
+                        snapshot_scanner_config_base(),
+                        regime_label,
+                        rr_auto,
+                    )
+                    aplicar_config_en_memoria(config_ejecucion)
+                    prev_reg = relax_ctx.get("regime_last", {}).get(sym)
+                    if prev_reg != regime_label:
+                        relax_ctx["regime_last"][sym] = regime_label
+                        if os.environ.get("IA_REGIME_AUTO_ENABLE", "0").strip().lower() in (
+                            "1",
+                            "true",
+                            "yes",
+                        ):
+                            print(
+                                f"[regime-auto] {sym} {prev_reg or '—'} → {regime_label} RR={rr_auto:.2f}"
+                            )
+                            try:
+                                notify_regime_change(sym, regime_label, rr_auto)
+                            except Exception as e:
+                                print(f"[TG] régimen: {e}", file=sys.stderr)
+                except Exception as e:
+                    print(f"[regime-auto] {e}", file=sys.stderr)
+
+                sig = analizar_ia(sym, config=config_ejecucion or None)
                 if os.environ.get("SENTIMENT_FILTER", "0").strip().lower() in ("1", "true", "yes"):
                     try:
                         from sentiment_news import sentiment_allows_trade
@@ -1451,15 +2280,18 @@ def main() -> None:
                         print(f"[SENTIMENT] {e}", file=sys.stderr)
 
                 if "COMPRA CONFIRMADA" in sig:
-                    if enviar_orden(
+                    sent = enviar_orden(
                         sym,
                         buy=True,
                         session_trade_num=trades_sent_session + 1,
                         ia_confidence=_confidence_from_signal(sig),
-                    ):
-                        log_trade_entry(symbol=sym, side="BUY", ia_confidence=_confidence_from_signal(sig))
+                    )
+                    if sent:
                         traded_this_round = True
+                    if sent == "filled":
+                        log_trade_entry(symbol=sym, side="BUY", ia_confidence=_confidence_from_signal(sig))
                         trades_sent_session += 1
+                    if sent:
                         tag = requested if sym == requested else f"{requested}->{sym}"
                         print(f"ALERTA {tag}: COMPRA @ {datetime.now().strftime('%H:%M:%S')}")
                         if max_trades > 0 and trades_sent_session >= max_trades:
@@ -1475,15 +2307,18 @@ def main() -> None:
                         time.sleep(cd_use)
                         break
                 elif "VENTA CONFIRMADA" in sig:
-                    if enviar_orden(
+                    sent = enviar_orden(
                         sym,
                         buy=False,
                         session_trade_num=trades_sent_session + 1,
                         ia_confidence=_confidence_from_signal(sig),
-                    ):
-                        log_trade_entry(symbol=sym, side="SELL", ia_confidence=_confidence_from_signal(sig))
+                    )
+                    if sent:
                         traded_this_round = True
+                    if sent == "filled":
+                        log_trade_entry(symbol=sym, side="SELL", ia_confidence=_confidence_from_signal(sig))
                         trades_sent_session += 1
+                    if sent:
                         tag = requested if sym == requested else f"{requested}->{sym}"
                         print(f"ALERTA {tag}: VENTA @ {datetime.now().strftime('%H:%M:%S')}")
                         if max_trades > 0 and trades_sent_session >= max_trades:
@@ -1516,12 +2351,25 @@ def main() -> None:
 
             if not traded_this_round:
                 print(f"{datetime.now().strftime('%H:%M:%S')} escaneando...")
+
+            try:
+                from ia_memory_gc import liberar_memoria_ciclo
+
+                liberar_memoria_ciclo()
+            except Exception as e:
+                if os.environ.get("IA_MEM_GC_VERBOSE", "0").strip().lower() in ("1", "true", "yes"):
+                    print(f"[mem_gc] {e}", file=sys.stderr)
+
             time.sleep(interval)
 
     except KeyboardInterrupt:
         print("Auto-trading detenido.")
     finally:
         _windows_release_sleep_inhibit()
+        try:
+            journal_flush_shutdown("salida ia_auto_trade_loop (finally)")
+        except Exception:
+            pass
         if stopped_deadline and telegram_report and session_start_utc is not None:
             from telegram_hour_pnl import send_pnl_window_telegram
 
