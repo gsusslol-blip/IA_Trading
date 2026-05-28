@@ -85,6 +85,38 @@ def notify_circuit_halt_global(reason: str) -> bool:
     return enviar_alerta_telegram(msg)
 
 
+def notify_mt5_reconnected() -> bool:
+    if not _should_send("mt5:reconnected"):
+        return False
+    msg = (
+        "<b>IA_Trading — CONEXIÓN RESTAURADA</b>\n\n"
+        "El bot recuperó el enlace con el servidor del bróker (MT5)."
+    )
+    return enviar_alerta_telegram(msg)
+
+
+def notify_mt5_connection_failed(attempts: int) -> bool:
+    if not _should_send("mt5:failed"):
+        return False
+    msg = (
+        "<b>IA_Trading — ERROR DE CONEXIÓN MT5</b>\n\n"
+        f"No se pudo reconectar tras <b>{attempts}</b> intentos.\n"
+        "<i>Ciclo en pausa; revisá terminal, red y AutoTrading.</i>"
+    )
+    return enviar_alerta_telegram(msg)
+
+
+def notify_margin_blocked(symbol: str, volume: float, reason: str) -> bool:
+    if not _should_send(f"margin:{symbol}"):
+        return False
+    msg = (
+        "<b>IA_Trading — ALERTA DE MARGEN</b>\n\n"
+        f"Orden bloqueada: <b>{symbol}</b> vol=<code>{volume:g}</code>\n"
+        f"Motivo: {reason}"
+    )
+    return enviar_alerta_telegram(msg)
+
+
 def notify_regime_change(symbol: str, regimen: str, rr_dinamico: float) -> bool:
     """Aviso cuando el régimen autónomo cambia respecto al ciclo anterior."""
     key = f"regime:{symbol}:{regimen}"

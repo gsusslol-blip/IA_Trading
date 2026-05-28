@@ -158,7 +158,8 @@ from mt5_prices import (
     es_spread_valido,
     closed_positions_pnls_by_magic,
 )
-from ia_risk_manager import calcular_lotaje_dinamico
+from ia_mt5_connection import asegurar_conexion_mt5
+from ia_risk_manager import calcular_lotaje_dinamico, validar_margen_disponible
 from ia_risk_streak import (
     apply_streak_to_risk_percent,
     refresh_streak_risk_state,
@@ -1482,6 +1483,18 @@ def enviar_orden(
         print(f"[RISK_CAP] Orden cancelada: {simbolo} {why_cap}", file=sys.stderr)
         return False
 
+    ok_margin, why_margin = validar_margen_disponible(
+        simbolo,
+        buy=buy,
+        volume=float(vol),
+        entry_price=float(price),
+        sl_price=float(sl),
+        tp_price=float(tp),
+    )
+    if not ok_margin:
+        print(f"{simbolo}: margen insuficiente ({why_margin}).", file=sys.stderr)
+        return False
+
     deviation = int(os.environ.get("DEVIATION", os.environ.get("IA_AUTO_DEVIATION", "20")))
     comment = (os.environ.get("IA_AUTO_COMMENT") or "IA_AUTO")[:31]
     filling_modes = _allowed_filling_modes_symbol(simbolo)
@@ -1734,6 +1747,20 @@ def main() -> None:
         relax_ctx: dict = {"level": 0}
 
         while True:
+            try:
+                if not asegurar_conexion_mt5():
+                    try:
+                        fail_sleep = float(
+                            os.environ.get("IA_MT5_RECONNECT_FAIL_SLEEP_S", "60").strip() or "60"
+                        )
+                    except ValueError:
+                        fail_sleep = 60.0
+                    time.sleep(max(5.0, fail_sleep))
+                    continue
+            except ConnectionError as e:
+                print(f"[MT5] {e}", file=sys.stderr)
+                break
+
             if os.environ.get("IA_OPTUNA_RELOAD_EACH_ROUND", "1").strip().lower() not in (
                 "0",
                 "false",
