@@ -170,6 +170,12 @@ from ia_intelligence_layer import (
     auto_ajuste_spread_por_auditoria,
     intelligence_allows_trade,
 )
+from ia_audit_logger import (
+    audit_enabled,
+    procesar_cierres_audit,
+    registrar_apertura_desde_orden,
+)
+from ia_trainer import auto_entrenar_modelo_ia, debe_entrenar_ml_semanal, train_auto_enabled
 from ia_risk_manager import calcular_lotaje_dinamico, validar_margen_disponible
 from ia_risk_streak import (
     apply_streak_to_risk_percent,
@@ -1584,6 +1590,17 @@ def enviar_orden(
                 journal_mark_opened_today()
             except Exception:
                 pass
+            if audit_enabled():
+                try:
+                    registrar_apertura_desde_orden(
+                        simbolo,
+                        buy=buy,
+                        volume=float(vol),
+                        entry_price=float(px_exec if px_exec is not None else price),
+                        order_result=result,
+                    )
+                except Exception as e:
+                    print(f"[audit] {e}", file=sys.stderr)
             return True
         comment = str(getattr(result, "comment", "") or "")
         print(
@@ -1807,6 +1824,14 @@ def main() -> None:
                 except Exception as e:
                     print(f"[optuna-auto] {e}", file=sys.stderr)
 
+            if train_auto_enabled() and debe_entrenar_ml_semanal():
+                try:
+                    procesar_cierres_audit(BOT_MAGIC)
+                    if auto_entrenar_modelo_ia():
+                        print("[trainer] Modelo ML actualizado.", flush=True)
+                except Exception as e:
+                    print(f"[trainer] {e}", file=sys.stderr)
+
             if os.environ.get("IA_OPTUNA_RELOAD_EACH_ROUND", "1").strip().lower() not in (
                 "0",
                 "false",
@@ -1818,6 +1843,14 @@ def main() -> None:
                 auto_ajuste_spread_por_auditoria()
             except Exception as e:
                 print(f"[autotune] {e}", file=sys.stderr)
+
+            if audit_enabled():
+                try:
+                    n_audit = procesar_cierres_audit(BOT_MAGIC)
+                    if n_audit > 0:
+                        print(f"[audit] {n_audit} cierre(s) añadidos al dataset ML.", flush=True)
+                except Exception as e:
+                    print(f"[audit] {e}", file=sys.stderr)
 
             try:
                 journal_tick()

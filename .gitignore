@@ -43,6 +43,11 @@ ia_idle_tune.log
 ia_auto_trade_loop.lock
 ia_telegram_panic_offset.json
 execution_quality.csv
+trade_audit_ml.csv
+ia_audit_pending.json
+ia_audit_pending.written.json
+ia_ml_train_state.json
+modelos/*.pkl
 ia_auto_trade_loop_runtime.log
 ia_phase1_journal.csv
 ia_trading_journal_state.json

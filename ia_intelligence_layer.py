@@ -195,9 +195,17 @@ def train_breakout_filter_from_memory(
     model_out: Path | None = None,
 ) -> bool:
     """
-    Entrena RandomForest con ``ia_auto_trade_memory.csv`` (label good/bad).
-    Requiere scikit-learn + joblib.
+    Legacy: entrena desde ``ia_auto_trade_memory.csv``.
+    Preferir ``ia_trainer.auto_entrenar_modelo_ia`` + ``trade_audit_ml.csv``.
     """
+    try:
+        from ia_trainer import auto_entrenar_modelo_ia
+        from ia_audit_logger import audit_csv_path
+
+        if audit_csv_path().is_file():
+            return auto_entrenar_modelo_ia(model_out=model_out)
+    except ImportError:
+        pass
     try:
         import joblib
         import pandas as pd

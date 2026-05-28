@@ -11,6 +11,8 @@
 - `ia_mt5_connection.py` — reconexión MT5.
 - `ia_auto_optimizer.py` — Optuna fin de semana → `params_optimized.json`.
 - `ia_intelligence_layer.py` — filtro ML + auto-tune spread por `execution_quality.csv`.
+- `ia_audit_logger.py` — dataset ML (métricas en apertura, resultado en cierre).
+- `ia_trainer.py` — entrena `modelos/filtro_falsos_rompimientos.pkl` desde `trade_audit_ml.csv`.
 - `local_env.py` — carga `.env` (nunca commitear `.env` con secretos).
 
 ## Arquitectura y estilo
