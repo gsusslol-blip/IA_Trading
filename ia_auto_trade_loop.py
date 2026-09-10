@@ -391,6 +391,9 @@ def _process_alive(pid: int) -> bool:
         os.kill(pid, 0)
     except OSError:
         return False
+    except (OverflowError, ValueError):
+        # PID outside the platform's valid range can't map to a live process.
+        return False
     return True
 
 
