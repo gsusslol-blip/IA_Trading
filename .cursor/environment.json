@@ -1,0 +1,4 @@
+{
+  "name": "IA_Trading",
+  "install": "bash .cursor/install.sh"
+}

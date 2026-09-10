@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Linux-only stub of the Windows-only MetaTrader5 package. It exists solely so
+# the IA_Trading modules can be imported (and their MT5 calls mocked) inside a
+# Cloud Agent / CI environment. It performs no real trading and connects to
+# nothing. On Windows, install the real `MetaTrader5` package instead.
+name = "MetaTrader5"
+version = "5.0.0"
+description = "Import-time stub of MetaTrader5 for Linux CI/dev (no real trading)."
+requires-python = ">=3.9"
+
+[tool.setuptools]
+py-modules = ["MetaTrader5"]
