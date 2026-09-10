@@ -33,4 +33,11 @@ $SUDO python3 -m pip install "${PIP_FLAGS[@]}" -q "$ROOT/.cursor/mt5-stub"
 # Remaining runtime dependencies (pandas, textblob, optuna).
 $SUDO python3 -m pip install "${PIP_FLAGS[@]}" -q -r "$ROOT/requirements.txt"
 
+# Fail fast if anything the project imports at load time is missing, so a broken
+# install surfaces here instead of as import errors when running the app/tests.
+python3 - <<'PY'
+import MetaTrader5, pandas, textblob, optuna  # noqa: F401
+print("IA_Trading deps OK:", "pandas", pandas.__version__, "| MetaTrader5", MetaTrader5.version())
+PY
+
 echo "IA_Trading dev environment ready. Run tests with: python3 run_tests.py"
