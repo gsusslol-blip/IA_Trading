@@ -1,0 +1,21 @@
+python-telegram-bot==21.10
+httpx==0.28.1
+ddgs==9.5.5
+edge-tts==7.2.3
+python-dotenv==1.1.0
+openai==1.99.9
+fastapi==0.116.1
+uvicorn==0.35.0
+python-multipart==0.0.20
+pillow==11.3.0
+pywebview==5.4
+tzdata==2025.2
+comtypes==1.4.11
+pycaw==20240210
+# Optional hands-free wake word (needs PICOVOICE_ACCESS_KEY in .env):
+pvporcupine>=3.0.0
+pvrecorder>=1.2.0
+# STT local on CPU (do not put Whisper on the 1660 Ti — VRAM is for Ollama).
+faster-whisper>=1.1.0
+# Optional Spotify desktop search box (gated by SPOTIFY_UI_CONTROL=1):
+pyautogui>=0.9.54

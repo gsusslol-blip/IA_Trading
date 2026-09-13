@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ilaria — Preferencias</title>
+  <link rel="icon" href="/favicon.svg" />
+  <style>
+    :root {
+      --bg: #0b0b0b;
+      --panel: #121212;
+      --cyan: #6ee7ff;
+      --cyan-dim: rgba(110, 231, 255, 0.18);
+      --text: #e8fbff;
+      --mute: #7aa3ad;
+      --red: #ff5a6a;
+      --line: #1c2428;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; min-height: 100%;
+      background: var(--bg); color: var(--text);
+      font-family: "Segoe UI", sans-serif;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 28px 20px 48px; }
+    a.back {
+      color: var(--mute); text-decoration: none; font-size: 12px;
+      letter-spacing: .12em; text-transform: uppercase;
+    }
+    a.back:hover { color: var(--cyan); }
+    h1 {
+      font-weight: 500; font-size: 20px; letter-spacing: .08em;
+      color: var(--cyan); border-bottom: 1px solid var(--line);
+      padding-bottom: 12px; margin: 18px 0 8px;
+    }
+    .hint { color: var(--mute); font-size: 14px; margin: 0 0 18px; line-height: 1.45; }
+    label {
+      display: block; font-size: 11px; color: var(--mute);
+      text-transform: uppercase; letter-spacing: .08em; margin: 14px 0 6px;
+    }
+    input, select {
+      width: 100%; background: var(--panel); border: 1px solid var(--line);
+      color: var(--text); padding: 11px 12px; font-size: 14px; outline: none;
+    }
+    input:focus, select:focus { border-color: var(--cyan); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .chip {
+      background: var(--panel); border: 1px solid var(--line);
+      padding: 7px 14px; border-radius: 999px; font-size: 12px;
+      cursor: pointer; color: var(--mute); user-select: none;
+      transition: border-color .15s, background .15s, color .15s;
+    }
+    .chip.on {
+      background: var(--cyan); color: #041016; border-color: var(--cyan); font-weight: 600;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; align-items: center; }
+    .go, .ghost {
+      padding: 11px 16px; cursor: pointer; letter-spacing: .12em;
+      text-transform: uppercase; font-size: 11px;
+    }
+    .go { background: var(--cyan); color: #041016; border: 0; font-weight: 700; }
+    .go:hover { filter: brightness(1.06); }
+    .ghost { background: transparent; color: var(--cyan); border: 1px solid var(--cyan); }
+    .err { color: var(--red); margin-top: 12px; font-size: 14px; }
+    .ok { color: var(--cyan); margin-top: 12px; font-size: 14px; }
+    h2 { font-weight: 500; font-size: 16px; margin: 36px 0 10px; color: var(--text); }
+    @media (max-width: 700px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="/">← Volver al HUD</a>
+    <h1>PREFERENCIAS DEL ASISTENTE</h1>
+    <p class="hint">
+      Cambiá cómo te habla, tu ciudad y los packs activos. Esto solo actualiza tu perfil local —
+      el núcleo cognitivo de Ilaria no se reescribe. La key de Groq es tuya y no se comparte.
+    </p>
+
+    <form id="form">
+      <div class="row">
+        <div>
+          <label for="display_name">Nombre en la cuenta</label>
+          <input id="display_name" name="display_name" required maxlength="80" />
+        </div>
+        <div>
+          <label for="address_as">Cómo querés que te llame</label>
+          <input id="address_as" name="address_as" placeholder="Ej: señor, gsuss…" maxlength="80" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="city">Ciudad (clima local)</label>
+          <input id="city" name="city" placeholder="Ej: Buenos Aires" maxlength="80" />
+        </div>
+        <div>
+          <label for="custom_tone">Tono de personalidad</label>
+          <select id="custom_tone" name="custom_tone">
+            <option value="tierno">Tierno — dulce e inocente</option>
+            <option value="equilibrado">Equilibrado — mayordomo elegante</option>
+            <option value="seco">Sarcástico / seco — ironía fina</option>
+            <option value="ejecutivo">Técnico / estricto — al grano</option>
+            <option value="serio">Serio — formal, sin juego</option>
+            <option value="calido">Cálido — más cercano</option>
+          </select>
+        </div>
+      </div>
+
+      <label>Packs de trabajo habilitados</label>
+      <div class="chips" id="packs"></div>
+
+      <label for="groq_key">Key Groq (vacío = no cambiar)</label>
+      <input id="groq_key" name="groq_key" placeholder="gsk_…" autocomplete="off" />
+
+      <div class="actions">
+        <button class="go" type="submit">Guardar preferencias</button>
+        <button class="ghost" type="button" id="out">Cerrar sesión</button>
+      </div>
+      <div class="err" id="err"></div>
+      <div class="ok" id="ok"></div>
+    </form>
+
+    <h2>Cambiar contraseña</h2>
+    <input id="cur" type="password" placeholder="actual" autocomplete="current-password" />
+    <input id="nw" type="password" placeholder="nueva (8+)" autocomplete="new-password" minlength="8" style="margin-top:8px" />
+    <div class="actions">
+      <button class="ghost" type="button" id="pw">Guardar clave</button>
+    </div>
+    <div class="err" id="pwErr"></div>
+    <div class="ok" id="pwOk"></div>
+  </div>
+
+  <script>
+    const selected = new Set();
+    const packsEl = document.getElementById("packs");
+    const form = document.getElementById("form");
+
+    function renderPacks(allPacks) {
+      packsEl.innerHTML = "";
+      allPacks.forEach((pack) => {
+        const chip = document.createElement("div");
+        chip.className = "chip" + (selected.has(pack.id) ? " on" : "");
+        chip.textContent = pack.title;
+        chip.title = pack.blurb || pack.id;
+        chip.onclick = () => {
+          if (selected.has(pack.id)) selected.delete(pack.id);
+          else selected.add(pack.id);
+          if (selected.size === 0) selected.add("diario");
+          chip.classList.toggle("on", selected.has(pack.id));
+          // Resync all chips if diario was force-added
+          [...packsEl.children].forEach((node, i) => {
+            const id = allPacks[i].id;
+            node.classList.toggle("on", selected.has(id));
+          });
+        };
+        packsEl.appendChild(chip);
+      });
+    }
+
+    Promise.all([fetch("/api/me"), fetch("/api/packs")])
+      .then(async ([meRes, packRes]) => {
+        if (!meRes.ok) { location.href = "/welcome"; return; }
+        const me = await meRes.json();
+        const packsPayload = await packRes.json();
+        const u = me.user || me;
+        form.display_name.value = u.display_name || "";
+        form.address_as.value = u.address_as || u.display_name || "";
+        form.city.value = u.city || "";
+        const tone = u.custom_tone || "equilibrado";
+        form.custom_tone.value = ["tierno", "equilibrado", "seco", "ejecutivo", "serio", "calido"].includes(tone)
+          ? tone
+          : "tierno";
+        (u.packs || u.enabled_packs || []).forEach((id) => selected.add(id));
+        if (selected.size === 0) selected.add("diario");
+        renderPacks(packsPayload.packs || []);
+      })
+      .catch(() => {
+        document.getElementById("err").textContent = "No pude cargar el perfil.";
+      });
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      document.getElementById("err").textContent = "";
+      document.getElementById("ok").textContent = "";
+      const res = await fetch("/api/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          display_name: form.display_name.value,
+          address_as: form.address_as.value,
+          city: form.city.value,
+          custom_tone: form.custom_tone.value,
+          groq_key: form.groq_key.value,
+          packs: [...selected],
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        document.getElementById("err").textContent =
+          (typeof data.detail === "string" ? data.detail : null) || "No se pudo guardar.";
+        return;
+      }
+      document.getElementById("ok").textContent = "Preferencias guardadas.";
+    });
+
+    document.getElementById("out").onclick = async () => {
+      await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
+      location.href = "/welcome";
+    };
+
+    document.getElementById("pw").onclick = async () => {
+      document.getElementById("pwErr").textContent = "";
+      document.getElementById("pwOk").textContent = "";
+      const res = await fetch("/api/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          current: document.getElementById("cur").value,
+          new: document.getElementById("nw").value,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        document.getElementById("pwErr").textContent =
+          (typeof data.detail === "string" ? data.detail : null) || "No se pudo.";
+        return;
+      }
+      document.getElementById("pwOk").textContent = "Clave actualizada.";
+      document.getElementById("cur").value = "";
+      document.getElementById("nw").value = "";
+    };
+  </script>
+</body>
+</html>

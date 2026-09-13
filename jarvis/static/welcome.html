@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ilaria</title>
+  <link rel="icon" href="/favicon.svg" />
+  <style>
+    :root {
+      --bg: #0b0b0b;
+      --pink: #ffb6c1;
+      --pink-dim: rgba(255, 182, 193, 0.22);
+      --text: #f1f5f9;
+      --mute: #9aa3b5;
+      --red: #ff5a6a;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; min-height: 100%;
+      background: radial-gradient(circle at 50% 0%, rgba(255, 140, 170, 0.18), transparent 48%), #0b0b0b;
+      color: var(--text);
+      font-family: "Segoe UI", sans-serif;
+    }
+    .wrap { max-width: 480px; margin: 0 auto; padding: 40px 22px 56px; }
+    .brand {
+      letter-spacing: 0.35em; color: var(--pink); font-size: 14px; font-weight: 600;
+    }
+    h1 { font-weight: 500; font-size: 26px; margin: 22px 0 8px; }
+    .lead { color: var(--mute); margin: 0 0 22px; line-height: 1.45; font-size: 14px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+    .tabs button {
+      flex: 1; background: transparent; color: var(--mute); border: 1px solid var(--pink-dim);
+      padding: 10px 12px; cursor: pointer; letter-spacing: 0.1em; text-transform: uppercase; font-size: 11px;
+    }
+    .tabs button.on { color: #1a0f14; background: var(--pink); border-color: var(--pink); font-weight: 700; }
+    label { display: block; font-size: 12px; color: var(--mute); margin: 12px 0 6px; }
+    input[type=text], input[type=password] {
+      width: 100%; background: #121018; border: 1px solid var(--pink-dim); color: var(--text);
+      padding: 11px 12px; font-size: 15px; outline: none;
+    }
+    input:focus { border-color: var(--pink); }
+    .check {
+      display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--mute); font-size: 13px;
+    }
+    .check input { accent-color: var(--pink); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .packs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+    .pack {
+      border: 1px solid var(--pink-dim); padding: 10px; cursor: pointer; min-height: 72px;
+    }
+    .pack.on { border-color: var(--pink); }
+    .pack strong { display: block; color: var(--pink); margin-bottom: 4px; font-size: 13px; font-weight: 600; }
+    .pack span { font-size: 12px; color: var(--mute); line-height: 1.3; }
+    .go {
+      width: 100%; margin-top: 20px; background: var(--pink); color: #1a0f14; border: 0;
+      padding: 13px 18px; cursor: pointer; letter-spacing: 0.14em; text-transform: uppercase;
+      font-size: 12px; font-weight: 700;
+    }
+    .err { color: var(--red); min-height: 1.2em; margin-top: 12px; font-size: 14px; }
+    .hint { font-size: 12px; color: var(--mute); margin-top: 10px; }
+    a { color: var(--pink); }
+    .hidden { display: none !important; }
+    @media (max-width: 560px) {
+      .row, .packs { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">ILARIA</div>
+    <h1>Hola</h1>
+    <p class="lead">Entrá con tu cuenta o creá una nueva en esta PC.</p>
+
+    <div class="tabs" id="tabs">
+      <button class="on" id="tabLog" type="button">Entrar</button>
+      <button id="tabReg" type="button">Crear cuenta</button>
+    </div>
+
+    <form id="log">
+      <label>Usuario</label>
+      <input name="username" required autocomplete="username" />
+      <label>Contraseña</label>
+      <input name="password" type="password" required autocomplete="current-password" />
+      <label class="check"><input type="checkbox" id="remember" checked /> Recordarme en esta PC</label>
+      <button class="go" type="submit">Entrar</button>
+      <div class="err" id="logErr"></div>
+    </form>
+
+    <form id="reg" class="hidden">
+      <div class="row">
+        <div>
+          <label>Tu nombre</label>
+          <input name="display_name" required maxlength="80" placeholder="Cómo te llamás" />
+        </div>
+        <div>
+          <label>Usuario</label>
+          <input name="username" required maxlength="24" placeholder="letras y números" autocomplete="username" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Contraseña</label>
+          <input name="password" type="password" required minlength="8" autocomplete="new-password" />
+        </div>
+        <div>
+          <label>Cómo te hablo</label>
+          <input name="address_as" placeholder="pá, tu nombre…" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Ciudad</label>
+          <input name="city" placeholder="Buenos Aires" />
+        </div>
+        <div>
+          <label>Key Groq (opcional)</label>
+          <input name="groq_key" placeholder="gsk_…" />
+        </div>
+      </div>
+      <label>Intereses</label>
+      <div class="packs" id="packs"></div>
+      <p class="hint">Key gratis: <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">console.groq.com/keys</a></p>
+      <button class="go" type="submit">Crear cuenta</button>
+      <div class="err" id="regErr"></div>
+    </form>
+  </div>
+  <script>
+    const packsEl = document.getElementById("packs");
+    const selected = new Set(["diario"]);
+    const tabReg = document.getElementById("tabReg");
+    const tabLog = document.getElementById("tabLog");
+    const reg = document.getElementById("reg");
+    const log = document.getElementById("log");
+    const REMEMBER_KEY = "ilaria_user";
+
+    // Already logged in (cookie) → HUD
+    fetch("/api/me", { credentials: "same-origin" })
+      .then((r) => { if (r.ok) location.replace("/"); })
+      .catch(() => {});
+
+    tabLog.onclick = () => {
+      tabLog.classList.add("on");
+      tabReg.classList.remove("on");
+      log.classList.remove("hidden");
+      reg.classList.add("hidden");
+    };
+    tabReg.onclick = () => {
+      tabReg.classList.add("on");
+      tabLog.classList.remove("on");
+      reg.classList.remove("hidden");
+      log.classList.add("hidden");
+    };
+
+    const saved = localStorage.getItem(REMEMBER_KEY);
+    if (saved) log.querySelector("[name=username]").value = saved;
+
+    fetch("/api/packs")
+      .then((r) => r.json())
+      .then((data) => {
+        packsEl.innerHTML = "";
+        (data.packs || []).forEach((pack) => {
+          const card = document.createElement("div");
+          card.className = "pack" + (selected.has(pack.id) ? " on" : "");
+          card.innerHTML = "<strong></strong><span></span>";
+          card.querySelector("strong").textContent = pack.title;
+          card.querySelector("span").textContent = pack.blurb;
+          card.onclick = () => {
+            if (selected.has(pack.id)) selected.delete(pack.id);
+            else selected.add(pack.id);
+            if (selected.size === 0) selected.add("diario");
+            card.classList.toggle("on", selected.has(pack.id));
+          };
+          packsEl.appendChild(card);
+        });
+      });
+
+    async function post(url, body, errEl) {
+      errEl.textContent = "";
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        errEl.textContent = (typeof data.detail === "string" ? data.detail : null) || "No se pudo.";
+        return;
+      }
+      location.replace("/");
+    }
+
+    reg.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const f = new FormData(reg);
+      const user = String(f.get("username") || "");
+      localStorage.setItem(REMEMBER_KEY, user);
+      post("/api/register", {
+        display_name: f.get("display_name"),
+        username: user,
+        password: f.get("password"),
+        address_as: f.get("address_as") || f.get("display_name"),
+        city: f.get("city") || "",
+        groq_key: f.get("groq_key") || "",
+        packs: [...selected],
+      }, document.getElementById("regErr"));
+    });
+
+    log.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const f = new FormData(log);
+      const user = String(f.get("username") || "");
+      if (document.getElementById("remember").checked) localStorage.setItem(REMEMBER_KEY, user);
+      else localStorage.removeItem(REMEMBER_KEY);
+      post("/api/login", {
+        username: user,
+        password: f.get("password"),
+      }, document.getElementById("logErr"));
+    });
+  </script>
+</body>
+</html>

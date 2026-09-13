@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ilaria — Dueño</title>
+  <link rel="icon" href="/favicon.svg" />
+  <style>
+    :root { --bg:#0b0b0b; --cyan:#6ee7ff; --dim:rgba(110,231,255,.18); --mute:#7aa3ad; --red:#ff5a6a; --text:#e8fbff; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:"Segoe UI",sans-serif; }
+    .wrap { max-width:860px; margin:0 auto; padding:28px 20px 50px; }
+    a { color:var(--cyan); text-decoration:none; font-size:12px; letter-spacing:.12em; text-transform:uppercase; }
+    h1 { font-weight:500; }
+    .card { border:1px solid var(--dim); padding:14px; margin:10px 0; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    button { background:transparent; color:var(--cyan); border:1px solid var(--cyan); padding:8px 12px; cursor:pointer; text-transform:uppercase; letter-spacing:.1em; font-size:11px; }
+    .mute { color:var(--mute); }
+    .err { color:var(--red); }
+    .ok { color:var(--cyan); }
+    input { background:transparent; border:1px solid var(--dim); color:var(--text); padding:8px; }
+    label { display:flex; gap:8px; align-items:center; margin:8px 0; color:var(--mute); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a href="/">← HUD</a>
+    <h1>Control del dueno</h1>
+    <p class="mute">Solo tu cuenta puede entrar aca. El registro de terceros esta cerrado salvo que lo abras.</p>
+    <div id="meta"></div>
+    <h2>Cuentas</h2>
+    <div id="users"></div>
+    <h2>Cambiar tu clave</h2>
+    <input id="cur" type="password" placeholder="actual" />
+    <input id="nw" type="password" placeholder="nueva (8+)" />
+    <button type="button" id="pw">Guardar clave</button>
+    <div class="err" id="err"></div>
+    <div class="ok" id="ok"></div>
+  </div>
+  <script>
+    const err = document.getElementById("err");
+    const ok = document.getElementById("ok");
+    function msg(t, good) { err.textContent = good ? "" : t; ok.textContent = good ? t : ""; }
+
+    async function defLoad() {
+      const res = await fetch("/api/admin/users");
+      if (res.status === 401) { location.href = "/welcome"; return; }
+      if (res.status === 403) { location.href = "/"; return; }
+      const data = await res.json();
+      document.getElementById("meta").innerHTML =
+        '<label><input type="checkbox" id="sign"' + (data.allow_signups ? " checked" : "") + "/> Permitir que otros se registren en ESTA PC</label>" +
+        '<label><input type="checkbox" id="hands"' + (data.members_pc_hands ? " checked" : "") + "/> Miembros pueden usar manos de PC (apps, captura, mail)</label>" +
+        '<button type="button" id="saveMeta">Guardar reglas</button>';
+      const box = document.getElementById("users");
+      box.innerHTML = "";
+      (data.users || []).forEach((u) => {
+        const el = document.createElement("div");
+        el.className = "card";
+        el.innerHTML = "<strong></strong> <span class='mute'></span>";
+        el.querySelector("strong").textContent = u.username + " (" + u.role + ")";
+        el.querySelector("span").textContent = (u.display_name || "") + (u.disabled ? " · DESHABILITADO" : "");
+        if (u.role !== "owner") {
+          const b1 = document.createElement("button");
+          b1.textContent = u.disabled ? "Habilitar" : "Deshabilitar";
+          b1.onclick = () => post("/api/admin/users", { user_id: u.id, disabled: !u.disabled });
+          const b2 = document.createElement("button");
+          b2.textContent = "Borrar";
+          b2.onclick = () => post("/api/admin/users", { user_id: u.id, delete: true });
+          el.appendChild(b1); el.appendChild(b2);
+        }
+        box.appendChild(el);
+      });
+      document.getElementById("saveMeta").onclick = () => post("/api/admin/meta", {
+        allow_signups: document.getElementById("sign").checked,
+        members_pc_hands: document.getElementById("hands").checked,
+      });
+    }
+
+    async function post(url, body) {
+      msg("", true);
+      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { msg(data.detail || "Error"); return; }
+      msg("Hecho.", true);
+      defLoad();
+    }
+
+    document.getElementById("pw").onclick = () => post("/api/admin/password", {
+      current: document.getElementById("cur").value,
+      new: document.getElementById("nw").value,
+    });
+
+    defLoad();
+  </script>
+</body>
+</html>
