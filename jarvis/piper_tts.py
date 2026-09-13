@@ -236,6 +236,12 @@ def _drop_session() -> None:
 atexit.register(_close_session)
 
 
+def reset_piper_session() -> None:
+    """Drop persistent Piper worker so the next speak respawns cleanly."""
+    with _session_lock:
+        _drop_session()
+
+
 def synthesize_wav(text: str, dest: Path) -> Path:
     exe = piper_exe()
     model = piper_model()

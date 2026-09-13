@@ -120,6 +120,7 @@ class Actions:
         self._folders["workspace"] = [self.workspace]
         self.client_surface = "hud"
         self.device_note = ""
+        self.android_upgrade_hint = ""
         self.phone_queue: list[dict[str, Any]] = []
 
     def capabilities(self) -> str:
@@ -143,6 +144,8 @@ class Actions:
             f"- Home Assistant lights/plugs: {ha}\n"
             "Will not: bank logins, card payments, silent WhatsApp/SMS send, "
             "reading the SMS inbox, root, or hardware you do not own.\n"
+            "Stack diagnose: get_system_health / check_lan_status; "
+            "owner remediación allowlisted: relaunch_service (ollama|piper|ha_ping).\n"
             "On the Ilaria Android app: phone_hands (dialer, SMS draft, WhatsApp draft, maps, "
             "apps, torch, camera, gallery, volume, alarm/timer, settings, share)."
         )

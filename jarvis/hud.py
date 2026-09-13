@@ -45,7 +45,25 @@ def _bind_surface(brain: Any, payload: ChatIn) -> None:
         parts.append("wifi" if device.get("wifi") else "not-wifi")
     if device.get("model"):
         parts.append(str(device.get("model"))[:40])
+    if device.get("app_version") or device.get("versionName"):
+        parts.append(f"app {device.get('app_version') or device.get('versionName')}")
     brain.actions.device_note = ", ".join(parts)
+    if surface == "android":
+        from jarvis.client_compat import android_upgrade_hint
+
+        brain.actions.android_upgrade_hint = android_upgrade_hint(device)
+    else:
+        brain.actions.android_upgrade_hint = ""
+
+
+def _with_android_hint(brain: Any, reply: str) -> str:
+    hint = (getattr(brain.actions, "android_upgrade_hint", "") or "").strip()
+    if not hint:
+        return reply
+    brain.actions.android_upgrade_hint = ""
+    if hint in reply:
+        return reply
+    return f"{reply.rstrip()}\n\n{hint}"
 
 
 def _phone_payload(brain: Any) -> list[dict[str, Any]]:
@@ -257,6 +275,9 @@ def create_hud(state: AppState) -> FastAPI:
         owner = state.accounts.owner()
         locked = not state.accounts.allow_signups
         port = state.settings.hud_port
+        from jarvis.pc_updater import load_channel_cache, min_required_android_client, update_url
+
+        channel = load_channel_cache()
         return {
             "version": __version__,
             "allow_signups": state.accounts.allow_signups,
@@ -268,6 +289,9 @@ def create_hud(state: AppState) -> FastAPI:
             "hud_port": port,
             "phone_urls": phone_base_urls(port),
             "lan": state.settings.hud_host in {"0.0.0.0", "::"},
+            "update_url_configured": bool(update_url()),
+            "min_required_android_client": min_required_android_client(),
+            "channel_version": str(channel.get("version") or __version__),
         }
 
     @app.get("/api/packs")
@@ -425,6 +449,7 @@ def create_hud(state: AppState) -> FastAPI:
             )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        reply = _with_android_hint(brain, reply)
         audio_url = None
         if payload.speak and reply.strip():
             if not gate.allow(f"tts:{user.id}", 20, 60):
@@ -481,7 +506,7 @@ def create_hud(state: AppState) -> FastAPI:
                     return
                 elif kind == "end":
                     break
-            reply = brain._last_assistant(session_id)
+            reply = _with_android_hint(brain, brain._last_assistant(session_id))
             audio_url = None
             if payload.speak and reply.strip():
                 if not gate.allow(f"tts:{user.id}", 20, 60):

@@ -241,7 +241,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "Control the user's Android phone when they are talking from the Ilaria app. "
         "action: call, sms, whatsapp, maps, navigate, browser, search, youtube, music, "
         "open_app, torch, camera, gallery, settings, wifi, bluetooth, volume, share, "
-        "clipboard, alarm, timer, calendar, contacts, email. "
+        "clipboard, alarm, timer, calendar, contacts, email, "
+        "open_wifi_settings, open_app_settings, clear_http, refresh_device_snap. "
         "target: phone number, place, URL, or any installed app name except banking apps, "
         "torch on/off, volume up/down/mute/0-100, alarm HH:MM, timer minutes. "
         "text: SMS/WhatsApp/share body. Never open bank/wallet banking apps. "
@@ -252,6 +253,45 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "text": {"type": "string"},
         },
         ["action"],
+    ),
+    _fn(
+        "queue_phone_fix",
+        "Enqueue Android maintenance for the CURRENT phone session only "
+        "(open_wifi_settings, open_app_settings, clear_http, refresh_device_snap). "
+        "Uses the same phone_actions SSE queue. Android client surface required.",
+        {
+            "action": {
+                "type": "string",
+                "description": "open_wifi_settings | open_app_settings | clear_http | refresh_device_snap",
+            },
+        },
+        ["action"],
+    ),
+    _fn(
+        "get_system_health",
+        "Diagnose ILARIA local stack: HUD /health, Ollama API, Piper voice files, "
+        "Home Assistant (if configured), UDP discover 8788, RAM. "
+        "Use for 'diagnostica', 'qué está caído', stack health — not for open apps list "
+        "(that is system_status).",
+        {},
+    ),
+    _fn(
+        "relaunch_service",
+        "One-step allowlisted remediación of ILARIA stack only. "
+        "service: ollama | piper | ha_ping. No arbitrary shell. Owner-oriented.",
+        {
+            "service": {
+                "type": "string",
+                "description": "ollama, piper, or ha_ping",
+            },
+        },
+        ["service"],
+    ),
+    _fn(
+        "check_lan_status",
+        "LAN IP(s), whether internet probe works, HUD URLs for the phone, "
+        "and whether UDP discover port 8788 is bound.",
+        {},
     ),
 ]
 
@@ -491,6 +531,28 @@ def make_executor(
             from jarvis.phone_hands import queue_action
 
             return queue_action(actions.phone_queue, args)
+        if name == "queue_phone_fix":
+            if getattr(actions, "client_surface", "hud") != "android":
+                return "Eso se hace en el celular. Pedilo desde la app Ilaria (Wi-Fi)."
+            from jarvis.phone_hands import queue_phone_fix
+
+            return json.dumps(
+                queue_phone_fix(actions.phone_queue, str(args.get("action", ""))),
+                ensure_ascii=False,
+            )
+        if name == "get_system_health":
+            from jarvis.self_healing import health_report_text
+
+            return health_report_text(settings)
+        if name == "relaunch_service":
+            from jarvis.self_healing import relaunch_service
+
+            result = relaunch_service(settings, str(args.get("service", "")))
+            return json.dumps(result, ensure_ascii=False)
+        if name == "check_lan_status":
+            from jarvis.self_healing import check_lan_status
+
+            return json.dumps(check_lan_status(settings), ensure_ascii=False)
         return f"Unknown tool: {name}"
 
     return execute
@@ -502,7 +564,7 @@ def _tool_name(schema: dict[str, Any]) -> str:
 
 ALL_TOOL_NAMES = {_tool_name(item) for item in TOOL_SCHEMAS}
 # Owner-only even when members_pc_hands is enabled.
-OWNER_ONLY_TOOLS = {"power_control"}
+OWNER_ONLY_TOOLS = {"power_control", "relaunch_service"}
 PC_TOOLS = {
     "open_app",
     "open_folder",
@@ -517,6 +579,7 @@ PC_TOOLS = {
     "set_clipboard",
     "get_clipboard",
     "power_control",
+    "relaunch_service",
 }
 MEMBER_TOOLS = ALL_TOOL_NAMES - PC_TOOLS
 

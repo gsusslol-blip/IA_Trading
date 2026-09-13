@@ -20,10 +20,8 @@ if not exist "%ANDROID_HOME%\platforms\android-35" (
   exit /b 1
 )
 
-echo sdk.dir=%ANDROID_HOME:\=\\% > android\local.properties
-:: Escape for local.properties format
 powershell -NoProfile -Command ^
-  "$p='%~dp0.android-sdk'.Replace('\','\\'); Set-Content -Path '%~dp0android\local.properties' -Value ('sdk.dir='+$p) -Encoding ASCII"
+  "$p=([IO.Path]::GetFullPath('%~dp0.android-sdk')).TrimEnd('\').Replace('\','\\'); [IO.File]::WriteAllText('%~dp0android\local.properties', 'sdk.dir='+$p+[Environment]::NewLine)"
 
 echo [+] Compilando APK debug (cliente Wi-Fi hacia la PC)...
 cd /d "%~dp0android"

@@ -70,6 +70,7 @@
     <div class="brand">ILARIA</div>
     <h1>Hola</h1>
     <p class="lead">Entrá con tu cuenta o creá una nueva en esta PC.</p>
+    <p class="hint" id="signupHint" style="margin-top:-12px;margin-bottom:18px;"></p>
 
     <div class="tabs" id="tabs">
       <button class="on" id="tabLog" type="button">Entrar</button>
@@ -138,6 +139,30 @@
       .then((r) => { if (r.ok) location.replace("/"); })
       .catch(() => {});
 
+    const signupHint = document.getElementById("signupHint");
+    let allowSignups = true;
+    fetch("/api/meta", { credentials: "same-origin" })
+      .then((r) => r.json())
+      .then((data) => {
+        allowSignups = !!data.allow_signups;
+        if (!allowSignups) {
+          tabReg.disabled = true;
+          tabReg.style.opacity = "0.45";
+          tabReg.style.cursor = "not-allowed";
+          signupHint.textContent = data.owner_hint
+            ? ("Registro cerrado. Pedile a @" + data.owner_hint + " que habilite cuentas nuevas en Admin.")
+            : "Registro cerrado en esta PC.";
+        } else if (!data.has_owner) {
+          signupHint.textContent = "Todavía no hay dueño: la primera cuenta que creés es el admin de esta PC.";
+          tabReg.click();
+        } else {
+          signupHint.textContent = "¿Primera vez? Tocá «Crear cuenta». Si ya tenés usuario, «Entrar».";
+        }
+      })
+      .catch(() => {
+        signupHint.textContent = "¿Primera vez? Tocá «Crear cuenta».";
+      });
+
     tabLog.onclick = () => {
       tabLog.classList.add("on");
       tabReg.classList.remove("on");
@@ -145,6 +170,11 @@
       reg.classList.add("hidden");
     };
     tabReg.onclick = () => {
+      if (!allowSignups) {
+        document.getElementById("regErr").textContent =
+          "El registro está cerrado. Solo el dueño puede habilitar cuentas nuevas.";
+        return;
+      }
       tabReg.classList.add("on");
       tabLog.classList.remove("on");
       reg.classList.remove("hidden");

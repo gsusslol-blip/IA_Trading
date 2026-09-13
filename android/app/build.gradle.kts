@@ -11,8 +11,8 @@ android {
         applicationId = "app.gsuss.asistente"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "1.5.2"
+        versionCode = 21
+        versionName = "1.5.4"
     }
     buildTypes {
         release {

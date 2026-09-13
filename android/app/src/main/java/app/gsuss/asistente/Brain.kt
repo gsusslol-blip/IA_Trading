@@ -27,22 +27,41 @@ private fun phoneActions(json: JSONObject): List<JSONObject> {
  * Talks to the PC-hosted Ilaria FastAPI when linked. The app also runs solo.
  */
 class Brain(private val prefs: Prefs) {
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
-        .build()
+    @Volatile
+    private var http = buildHttp()
     private val jsonType = "application/json; charset=utf-8".toMediaType()
-    private val pulse = OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(3, TimeUnit.SECONDS)
-        .build()
-    private val sseHttp = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(false)
-        .build()
+    @Volatile
+    private var pulse = buildPulse()
+    @Volatile
+    private var sseHttp = buildSse()
     private var player: MediaPlayer? = null
+
+    /** Drop keep-alive pools after clear_http maintenance from the PC. */
+    fun rebuildClients() {
+        http = buildHttp()
+        pulse = buildPulse()
+        sseHttp = buildSse()
+    }
+
+    private fun buildHttp(): OkHttpClient =
+        OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .build()
+
+    private fun buildPulse(): OkHttpClient =
+        OkHttpClient.Builder()
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(3, TimeUnit.SECONDS)
+            .build()
+
+    private fun buildSse(): OkHttpClient =
+        OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(false)
+            .build()
 
     fun login(user: String, password: String): String {
         val body = JSONObject()
@@ -70,6 +89,7 @@ class Brain(private val prefs: Prefs) {
             .put("username", user.trim())
             .put("password", password)
             .put("display_name", name.ifBlank { user })
+            .put("address_as", name.ifBlank { user })
             .put("city", city)
             .put("packs", JSONArray(packs))
             .put("groq_key", groqKey)

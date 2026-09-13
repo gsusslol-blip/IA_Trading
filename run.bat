@@ -10,6 +10,7 @@ echo [!] Inicializando Ilaria
 echo ===================================================
 echo HUD: http://localhost:8787/
 echo Celular: Wi-Fi, no 4G. La app busca la PC sola.
+echo Updates PC: ILARIA_UPDATE_URL en .env (ZIP liviano, sin modelos).
 
 cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\ensure_piper.ps1""
 

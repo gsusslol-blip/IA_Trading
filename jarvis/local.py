@@ -45,6 +45,53 @@ def try_local_command(
     if re.search(r"\b(estado(?:\s+de)?(?:\s+la)?\s+pc|qu[eé] hay abierto|qu[eé] apps)\b", lower):
         return run("system_status")
 
+    if re.search(
+        r"\b(diagn[oó]stic|salud(?:\s+del)?\s+sistema|qu[eé] est[aá] ca[ií]d|"
+        r"estado(?:\s+de)?(?:\s+)?ilaria|revis[aá](?:\s+el)?\s+stack|"
+        r"ollama(?:\s+ca[ií]d)?|piper(?:\s+ca[ií]d)?)\b",
+        lower,
+    ):
+        return run("get_system_health")
+
+    if re.search(
+        r"\b(estado(?:\s+de)?(?:\s+la)?\s+(?:red|lan|wifi)|ip(?:\s+local)?|"
+        r"descubrimiento|puerto\s+8788)\b",
+        lower,
+    ):
+        return run("check_lan_status")
+
+    if re.search(r"\b(reinici[aá]|levant[aá]|despert[aá])\s+ollama\b", lower):
+        return run("relaunch_service", service="ollama")
+    if re.search(r"\b(reinici[aá]|refresc[aá])\s+piper\b", lower):
+        return run("relaunch_service", service="piper")
+    if re.search(r"\b(ping|prob[aá]|refresc[aá])\s+(?:home\s*assistant|ha)\b", lower):
+        return run("relaunch_service", service="ha_ping")
+
+    if android:
+        if re.search(
+            r"(?:abr[ií]|abrime|abrir|abre|open).{0,24}\b(?:wifi|wi[\-\s]?fi)\b|"
+            r"\b(?:ajustes|configuraci[oó]n)\s+(?:de\s+)?(?:el\s+)?(?:wifi|wi[\-\s]?fi)\b",
+            lower,
+        ):
+            return run("queue_phone_fix", action="open_wifi_settings")
+        if re.search(
+            r"\b(?:ajustes|configuraci[oó]n|permisos)\s+(?:de\s+)?(?:la\s+)?(?:app|aplicaci[oó]n|ilaria)\b|"
+            r"\bapp\s+settings\b",
+            lower,
+        ):
+            return run("queue_phone_fix", action="open_app_settings")
+        if re.search(
+            r"\b(?:limpi[aá]|reset(?:ear)?|reinici[aá])\s+(?:la\s+)?(?:conexi[oó]n|http|okhttp|cliente)\b|"
+            r"\bclear\s*http\b",
+            lower,
+        ):
+            return run("queue_phone_fix", action="clear_http")
+        if re.search(
+            r"\b(?:refresc[aá]|actualiz[aá])\s+(?:el\s+)?(?:snap|estado(?:\s+del)?\s+celular|device(?:\s*snap)?)\b",
+            lower,
+        ):
+            return run("queue_phone_fix", action="refresh_device_snap")
+
     vol = re.search(r"volumen(?:\s+(?:al|a|en))?\s+(\d{1,3})\s*%?", lower)
     if vol:
         return run("set_volume", level=int(vol.group(1)))

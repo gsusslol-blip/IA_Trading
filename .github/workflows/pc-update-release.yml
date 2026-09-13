@@ -1,0 +1,63 @@
+name: PC update release
+
+# Tag: pc-v1.5.1  → builds ZIP + version.json and publishes GitHub Release assets.
+# Clients: ILARIA_UPDATE_URL=https://github.com/<owner>/<repo>/releases/latest/download/version.json
+
+on:
+  push:
+    tags:
+      - "pc-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without pc-v prefix (e.g. 1.5.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve version + repo
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VER="${{ inputs.version }}"
+          else
+            REF="${GITHUB_REF_NAME}"
+            VER="${REF#pc-v}"
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=pc-v$VER" >> "$GITHUB_OUTPUT"
+          echo "repo=${GITHUB_REPOSITORY}" >> "$GITHUB_OUTPUT"
+
+      - name: Build update package
+        env:
+          VER: ${{ steps.meta.outputs.version }}
+          REPO: ${{ steps.meta.outputs.repo }}
+        run: |
+          python tools/release_pipeline.py --version "$VER" --repo "$REPO" --min-android 1.5.4 --notes "CI $VER"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Ilaria PC ${{ steps.meta.outputs.version }}
+          files: |
+            dist/pc-update/ilaria-pc-${{ steps.meta.outputs.version }}.zip
+            dist/pc-update/version.json
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

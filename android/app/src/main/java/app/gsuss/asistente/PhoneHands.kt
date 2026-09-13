@@ -16,7 +16,8 @@ import org.json.JSONObject
 
 /** Runs allowlisted intents on this phone. User confirms calls/SMS in the system app. */
 object PhoneHands {
-    fun run(context: Context, raw: JSONObject) {
+    /** Returns a signal for MainActivity when the action is client-side only. */
+    fun run(context: Context, raw: JSONObject): String? {
         val action = raw.optString("action").lowercase()
         val target = raw.optString("target")
         val text = raw.optString("text")
@@ -58,6 +59,13 @@ object PhoneHands {
             "gallery" -> start(app, Intent(Intent.ACTION_VIEW).setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*"))
             "settings" -> start(app, Intent(Settings.ACTION_SETTINGS))
             "wifi" -> start(app, Intent(Settings.ACTION_WIFI_SETTINGS))
+            "open_wifi_settings" -> start(app, Intent(Settings.ACTION_WIFI_SETTINGS))
+            "open_app_settings" -> {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                intent.data = Uri.fromParts("package", app.packageName, null)
+                start(app, intent)
+            }
+            "clear_http", "refresh_device_snap" -> return action
             "bluetooth" -> start(app, Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
             "volume" -> volume(app, target)
             "share" -> {
@@ -92,6 +100,7 @@ object PhoneHands {
             "email" -> start(app, Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${target}")).putExtra(Intent.EXTRA_TEXT, text))
             else -> { }
         }
+        return null
     }
 
     private fun playSpotifySearch(app: Context, raw: String) {
@@ -256,10 +265,21 @@ object DeviceSnap {
             @Suppress("DEPRECATION")
             cm.activeNetworkInfo?.type == android.net.ConnectivityManager.TYPE_WIFI
         }
+        var versionName = ""
+        var versionCode = 0
+        try {
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            versionName = info.versionName ?: ""
+            versionCode = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode.toInt() else @Suppress("DEPRECATION") info.versionCode
+        } catch (_: Exception) {
+        }
         return JSONObject()
             .put("battery", pct)
             .put("charging", plugged)
             .put("wifi", wifi)
             .put("model", Build.MODEL)
+            .put("app_version", versionName)
+            .put("versionName", versionName)
+            .put("versionCode", versionCode)
     }
 }

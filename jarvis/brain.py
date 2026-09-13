@@ -360,8 +360,14 @@ class Brain:
                 yield answer
             self._store(session_id, answer)
         except Exception as exc:  # noqa: BLE001
+            from jarvis.passive_heal import on_llm_exception, owner_hint
+
+            heal = on_llm_exception(self.settings, exc)
+            hint = owner_hint(heal) if self.is_owner else ""
             if is_missing_model_error(exc) or _is_soft_llm_failure(exc):
                 answer = self._finish(self._local_answer(text))
+                if hint:
+                    answer = f"{answer}\n{hint}"
                 self._store(session_id, answer)
                 yield answer
                 return
@@ -374,6 +380,8 @@ class Brain:
                 answer = f"{who}, se me trabó el cerebro local: {detail}"
             else:
                 answer = f"Detecté una anomalía en el enlace cognitivo: {detail}"
+            if hint:
+                answer = f"{answer}\n{hint}"
             self._store(session_id, answer)
             yield answer
 

@@ -24,6 +24,10 @@ ALLOWED = frozenset(
         "gallery",
         "settings",
         "wifi",
+        "open_wifi_settings",
+        "open_app_settings",
+        "clear_http",
+        "refresh_device_snap",
         "bluetooth",
         "volume",
         "share",
@@ -35,6 +39,23 @@ ALLOWED = frozenset(
         "email",
         "music",
         "youtube",
+    }
+)
+
+_MAINTENANCE = frozenset(
+    {
+        "open_wifi_settings",
+        "open_app_settings",
+        "clear_http",
+        "refresh_device_snap",
+        "wifi",
+        "settings",
+        "bluetooth",
+        "torch",
+        "camera",
+        "gallery",
+        "calendar",
+        "contacts",
     }
 )
 
@@ -110,5 +131,23 @@ def queue_action(queue: list[dict[str, Any]], raw: dict[str, Any]) -> str:
         item["target"] = (target or "1").strip()[:16]
         if text:
             item["text"] = text[:80]
+    # wifi/settings/camera/gallery/maintenance: action-only payloads
     queue.append(item)
     return "OK: el celular va a ejecutar " + json.dumps(item, ensure_ascii=False)
+
+
+def queue_phone_fix(queue: list[dict[str, Any]], action: str) -> dict[str, Any]:
+    """Enqueue a maintenance-only phone action into THIS session's queue."""
+    key = (action or "").strip().lower()
+    allowed = {
+        "open_wifi_settings",
+        "open_app_settings",
+        "clear_http",
+        "refresh_device_snap",
+    }
+    if key not in allowed:
+        return {"status": "ERROR", "message": "Accion de mantenimiento no permitida."}
+    msg = queue_action(queue, {"action": key})
+    if not msg.startswith("OK:"):
+        return {"status": "ERROR", "message": msg}
+    return {"status": "QUEUED", "action": key}

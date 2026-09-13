@@ -117,65 +117,141 @@ private fun AppRoot(prefs: Prefs) {
 @Composable
 private fun Welcome(prefs: Prefs, onIn: () -> Unit) {
     val context = LocalContext.current
+    var mode by remember { mutableStateOf("login") } // login | register
     var user by remember { mutableStateOf(prefs.username) }
     var pass by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf(prefs.displayName) }
+    var city by remember { mutableStateOf(prefs.city.ifBlank { "Buenos Aires" }) }
     var err by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     Column(Modifier.verticalScroll(rememberScrollState())) {
         Text("ILARIA", color = Pink, letterSpacing = 8.sp, modifier = Modifier.padding(bottom = 8.dp))
-        Text("Funciona en el celular. La PC es opcional, para pensar más y sincronizar.", color = Mute, fontSize = 14.sp, modifier = Modifier.padding(bottom = 16.dp))
+        Text(
+            "Funciona en el celular. La PC es opcional, para pensar más y sincronizar.",
+            color = Mute,
+            fontSize = 14.sp,
+            modifier = Modifier.padding(bottom = 16.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = { mode = "login"; err = "" },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (mode == "login") Pink else Pink.copy(alpha = 0.25f),
+                    contentColor = if (mode == "login") Bg else Color.White,
+                ),
+                modifier = Modifier.weight(1f),
+            ) { Text("Entrar") }
+            Button(
+                onClick = { mode = "register"; err = "" },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (mode == "register") Pink else Pink.copy(alpha = 0.25f),
+                    contentColor = if (mode == "register") Bg else Color.White,
+                ),
+                modifier = Modifier.weight(1f),
+            ) { Text("Crear cuenta") }
+        }
         Field("Usuario", user) { user = it }
-        Field("Contraseña (solo para la PC)", pass, password = true) { pass = it }
+        Field(
+            if (mode == "register") "Contraseña (mín. 8)" else "Contraseña (solo para la PC)",
+            pass,
+            password = true,
+        ) { pass = it }
+        if (mode == "register") {
+            Field("Tu nombre", name) { name = it }
+            Field("Ciudad", city) { city = it }
+            Text(
+                "Crea tu usuario en la PC de esta red Wi‑Fi. Después podés entrar con esos datos.",
+                color = Mute,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
         if (err.isNotBlank()) Text(err, color = Color(0xFFFF5A6A), modifier = Modifier.padding(top = 8.dp))
-        Button(
-            onClick = {
-                err = ""
-                busy = true
-                scope.launch {
-                    try {
-                        withContext(Dispatchers.IO) {
-                            prefs.enterSolo(user)
-                            SoloTts.warm(context)
+        if (mode == "register") {
+            Button(
+                onClick = {
+                    err = ""
+                    busy = true
+                    scope.launch {
+                        try {
+                            if (user.isBlank() || pass.length < 8) {
+                                throw IllegalStateException("Usuario y contraseña de al menos 8 caracteres.")
+                            }
+                            withContext(Dispatchers.IO) {
+                                prefs.baseUrl = resolvePc(context, prefs)
+                                Brain(prefs).register(
+                                    user = user,
+                                    password = pass,
+                                    name = name.ifBlank { user },
+                                    city = city,
+                                    packs = listOf("diario"),
+                                    groqKey = "",
+                                )
+                                prefs.solo = true
+                            }
+                            onIn()
+                        } catch (e: Exception) {
+                            err = e.message ?: "No pude crear la cuenta en la PC."
+                        } finally {
+                            busy = false
                         }
-                        onIn()
-                    } catch (e: Exception) {
-                        err = e.message ?: "No pude abrir el modo celular."
-                    } finally {
-                        busy = false
                     }
-                }
-            },
-            enabled = !busy,
-            colors = ButtonDefaults.buttonColors(containerColor = Pink, contentColor = Bg),
-            modifier = Modifier.padding(top = 16.dp),
-        ) { Text(if (busy) "…" else "Usar en el celular") }
-        Button(
-            onClick = {
-                err = ""
-                busy = true
-                scope.launch {
-                    try {
-                        if (user.isBlank() || pass.isBlank()) {
-                            throw IllegalStateException("Usuario y contraseña para la PC.")
+                },
+                enabled = !busy,
+                colors = ButtonDefaults.buttonColors(containerColor = Pink, contentColor = Bg),
+                modifier = Modifier.padding(top = 16.dp).fillMaxWidth(),
+            ) { Text(if (busy) "…" else "Crear cuenta y sincronizar") }
+        } else {
+            Button(
+                onClick = {
+                    err = ""
+                    busy = true
+                    scope.launch {
+                        try {
+                            withContext(Dispatchers.IO) {
+                                prefs.enterSolo(user)
+                                SoloTts.warm(context)
+                            }
+                            onIn()
+                        } catch (e: Exception) {
+                            err = e.message ?: "No pude abrir el modo celular."
+                        } finally {
+                            busy = false
                         }
-                        withContext(Dispatchers.IO) {
-                            prefs.baseUrl = resolvePc(context, prefs)
-                            Brain(prefs).login(user, pass)
-                            prefs.solo = true
-                        }
-                        onIn()
-                    } catch (e: Exception) {
-                        err = e.message ?: "No pude conectar con la PC."
-                    } finally {
-                        busy = false
                     }
-                }
-            },
-            enabled = !busy,
-            colors = ButtonDefaults.buttonColors(containerColor = Pink.copy(alpha = 0.85f), contentColor = Bg),
-            modifier = Modifier.padding(top = 8.dp),
-        ) { Text(if (busy) "…" else "Entrar y sincronizar con la PC") }
+                },
+                enabled = !busy,
+                colors = ButtonDefaults.buttonColors(containerColor = Pink, contentColor = Bg),
+                modifier = Modifier.padding(top = 16.dp).fillMaxWidth(),
+            ) { Text(if (busy) "…" else "Usar en el celular") }
+            Button(
+                onClick = {
+                    err = ""
+                    busy = true
+                    scope.launch {
+                        try {
+                            if (user.isBlank() || pass.isBlank()) {
+                                throw IllegalStateException("Usuario y contraseña para la PC.")
+                            }
+                            withContext(Dispatchers.IO) {
+                                prefs.baseUrl = resolvePc(context, prefs)
+                                Brain(prefs).login(user, pass)
+                                prefs.solo = true
+                            }
+                            onIn()
+                        } catch (e: Exception) {
+                            err = e.message ?: "No pude conectar con la PC."
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+                enabled = !busy,
+                colors = ButtonDefaults.buttonColors(containerColor = Pink.copy(alpha = 0.85f), contentColor = Bg),
+                modifier = Modifier.padding(top = 8.dp).fillMaxWidth(),
+            ) { Text(if (busy) "…" else "Entrar y sincronizar con la PC") }
+        }
     }
 }
 
@@ -255,7 +331,12 @@ private fun Chat(prefs: Prefs, notes: NotesCache, onProfile: () -> Unit, onOut: 
                 }
             }
             val reply = out.text
-            out.phone.forEach { PhoneHands.run(context, it) }
+            out.phone.forEach { item ->
+                when (PhoneHands.run(context, item)) {
+                    "clear_http" -> brain.rebuildClients()
+                    "refresh_device_snap" -> { /* next chat already ships DeviceSnap */ }
+                }
+            }
             if (caption.isBlank()) caption = reply
             if (!out.fromPc) SoloTts.say(reply)
             log.add(Bubble(false, reply))
@@ -466,16 +547,28 @@ private fun Profile(prefs: Prefs, notes: NotesCache, onBack: () -> Unit) {
     var host by remember { mutableStateOf(prefs.baseUrl) }
     var user by remember { mutableStateOf(prefs.username) }
     var pass by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf(prefs.displayName) }
+    var city by remember { mutableStateOf(prefs.city.ifBlank { "Buenos Aires" }) }
+    var creating by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf("") }
     var ok by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     Column(Modifier.verticalScroll(rememberScrollState())) {
         TextButton(onClick = onBack) { Text("← Chat", color = Pink) }
-        Text("El celular funciona solo. La PC es opcional para el cerebro grande y las notas compartidas.", color = Mute, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp))
+        Text(
+            "El celular funciona solo. La PC es opcional para el cerebro grande y las notas compartidas.",
+            color = Mute,
+            fontSize = 13.sp,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
         Field("URL de la PC", host) { host = it }
         Field("Usuario PC", user) { user = it }
         Field("Contraseña PC", pass, password = true) { pass = it }
+        if (creating) {
+            Field("Tu nombre", name) { name = it }
+            Field("Ciudad", city) { city = it }
+        }
         if (err.isNotBlank()) Text(err, color = Color(0xFFFF5A6A), modifier = Modifier.padding(top = 8.dp))
         if (ok.isNotBlank()) Text(ok, color = Pink, modifier = Modifier.padding(top = 8.dp))
         Button(
@@ -498,29 +591,77 @@ private fun Profile(prefs: Prefs, notes: NotesCache, onBack: () -> Unit) {
         ) { Text("Buscar PC") }
         Button(
             onClick = {
+                creating = !creating
                 err = ""
                 ok = ""
-                scope.launch {
-                    try {
-                        if (user.isBlank() || pass.isBlank()) {
-                            throw IllegalStateException("Usuario y contraseña de la PC.")
-                        }
-                        withContext(Dispatchers.IO) {
-                            prefs.baseUrl = host.ifBlank { resolvePc(context, prefs) }
-                            val brain = Brain(prefs)
-                            brain.login(user, pass)
-                            notes.syncWith(brain)
-                            prefs.solo = true
-                        }
-                        ok = "Sincronizada con la PC."
-                    } catch (e: Exception) {
-                        err = e.message ?: "No pude enlazar."
-                    }
-                }
             },
-            colors = ButtonDefaults.buttonColors(containerColor = Pink, contentColor = Bg),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (creating) Pink else Pink.copy(alpha = 0.35f),
+                contentColor = if (creating) Bg else Color.White,
+            ),
             modifier = Modifier.padding(top = 8.dp),
-        ) { Text("Enlazar y sincronizar") }
+        ) { Text(if (creating) "Cancelar crear cuenta" else "Crear cuenta nueva en la PC") }
+        if (creating) {
+            Button(
+                onClick = {
+                    err = ""
+                    ok = ""
+                    scope.launch {
+                        try {
+                            if (user.isBlank() || pass.length < 8) {
+                                throw IllegalStateException("Usuario y contraseña de al menos 8 caracteres.")
+                            }
+                            withContext(Dispatchers.IO) {
+                                prefs.baseUrl = host.ifBlank { resolvePc(context, prefs) }
+                                val brain = Brain(prefs)
+                                brain.register(
+                                    user = user,
+                                    password = pass,
+                                    name = name.ifBlank { user },
+                                    city = city,
+                                    packs = listOf("diario"),
+                                    groqKey = "",
+                                )
+                                notes.syncWith(brain)
+                                prefs.solo = true
+                            }
+                            creating = false
+                            ok = "Cuenta creada y sincronizada."
+                        } catch (e: Exception) {
+                            err = e.message ?: "No pude crear la cuenta."
+                        }
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Pink, contentColor = Bg),
+                modifier = Modifier.padding(top = 8.dp),
+            ) { Text("Crear y sincronizar") }
+        } else {
+            Button(
+                onClick = {
+                    err = ""
+                    ok = ""
+                    scope.launch {
+                        try {
+                            if (user.isBlank() || pass.isBlank()) {
+                                throw IllegalStateException("Usuario y contraseña de la PC.")
+                            }
+                            withContext(Dispatchers.IO) {
+                                prefs.baseUrl = host.ifBlank { resolvePc(context, prefs) }
+                                val brain = Brain(prefs)
+                                brain.login(user, pass)
+                                notes.syncWith(brain)
+                                prefs.solo = true
+                            }
+                            ok = "Sincronizada con la PC."
+                        } catch (e: Exception) {
+                            err = e.message ?: "No pude enlazar."
+                        }
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Pink, contentColor = Bg),
+                modifier = Modifier.padding(top = 8.dp),
+            ) { Text("Enlazar y sincronizar") }
+        }
         Button(
             onClick = {
                 err = ""

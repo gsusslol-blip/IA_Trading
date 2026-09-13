@@ -31,6 +31,12 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()
     _attach_log()
     try:
+        try:
+            from jarvis.pc_updater import maybe_update_on_boot
+
+            maybe_update_on_boot()
+        except Exception as upd_exc:  # noqa: BLE001 — never block boot
+            print(f"[updater] ignored: {upd_exc}")
         from jarvis.runtime import main
 
         main()

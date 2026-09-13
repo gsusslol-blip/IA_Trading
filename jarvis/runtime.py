@@ -133,7 +133,15 @@ def open_ui(url: str, title: str = "Ilaria") -> None:
     try:
         import webview
 
-        window = webview.create_window(title, url, width=480, height=720, min_size=(400, 560))
+        window = webview.create_window(
+            title,
+            url,
+            width=480,
+            height=720,
+            min_size=(400, 560),
+            transparent=True,
+            background_color="#00000000",
+        )
 
         def _allow_mic() -> None:
             try:

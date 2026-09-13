@@ -1,0 +1,8 @@
+{
+  "version": "1.5.1",
+  "min_required_android_client": "1.5.4",
+  "changelog": [
+    "CDN GitHub Releases",
+    "Passive heal 5xx/timeout"
+  ]
+}
