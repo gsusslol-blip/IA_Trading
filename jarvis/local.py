@@ -96,8 +96,36 @@ def try_local_command(
     if vol:
         return run("set_volume", level=int(vol.group(1)))
 
-    if re.search(r"\b(silenci[oa]|mute(?:ar)?)\b", lower) and "volumen" in lower:
+    if re.search(r"\b(silenci(?:ar|[oaá])|mute(?:ar)?|sin\s+sonido)\b", lower):
         return run("media", action="mute")
+
+    if re.search(
+        r"\b(paus[aá]|pause|play|reproduc[ií]|siguiente|next|anterior|previous|prev)\b",
+        lower,
+    ) and re.search(r"\b(m[uú]sica|canci[oó]n|tema|spotify|media|track|pista)\b", lower):
+        if re.search(r"\b(siguiente|next)\b", lower):
+            return run("media", action="next")
+        if re.search(r"\b(anterior|previous|prev)\b", lower):
+            return run("media", action="previous")
+        if re.search(r"\b(paus[aá]|pause)\b", lower):
+            return run("media", action="pause")
+        return run("media", action="play")
+
+    if re.search(
+        r"\b(captura(?:\s+de\s+pantalla)?|screenshot|sac[aá](?:me)?\s+(?:una\s+)?(?:foto|captura)|"
+        r"foto\s+de\s+pantalla)\b",
+        lower,
+    ):
+        return run("screenshot")
+
+    folder = re.search(
+        r"(?:abr[ií]|abrime|abrir|abre|open|mostr[aá]|and[aá]\s+a)\s+"
+        r"(?:la\s+|el\s+)?(?:carpeta\s+(?:de\s+)?)?(escritorio|desktop|descargas|downloads|"
+        r"documentos|documents|workspace)\b",
+        lower,
+    )
+    if folder:
+        return run("open_folder", name=folder.group(1))
 
     if re.search(r"\b(portapapeles|clipboard)\b", lower) and re.search(
         r"\b(le[eé]|mostr|qu[eé] hay|copi)\b", lower
@@ -126,10 +154,14 @@ def try_local_command(
         action = "off" if re.search(r"\bapag", lower) else "on"
         return run("control_device", entity_id=entity, action=action)
 
-    if re.search(r"\b(apag[aá]|shutdown|apaga(?:r)?(?:\s+la)?(?:\s+pc|computadora|equipo)?)\b", lower):
+    if re.search(
+        r"\b(apag[aá]|shutdown)\b.{0,24}\b(pc|computadora|equipo|windows|sistema)\b|"
+        r"\b(apaga(?:r)?\s+la\s+(?:pc|computadora|equipo))\b",
+        lower,
+    ):
         return run("power_control", action="shutdown")
     if re.search(r"\b(reinici[aá]|reboot|restart)\b", lower) and re.search(
-        r"\b(pc|computadora|equipo|sistema|windows)?\b", lower
+        r"\b(pc|computadora|equipo|sistema|windows)\b", lower
     ):
         return run("power_control", action="restart")
 
@@ -247,7 +279,10 @@ def try_local_command(
         return run("open_maps", destination=maps.group(1).strip(), origin="")
 
     opened = re.search(
-        r"(?:abr[ií]|abrime|abrir|abre|open|lanz[aá])\s+(?:la\s+|el\s+|app\s+(?:de\s+)?)?(.+)$",
+        r"(?:abr[ií]|abrime|abrir|abre|open|lanz[aá]|ejecut[aá]|and[aá]\s+a|"
+        r"quiero\s+que\s+abras?|necesito\s+que\s+abras?|pod[eé]s\s+abrir|"
+        r"hac[eé](?:me)?\s+(?:el\s+favor\s+de\s+)?abrir)\s+"
+        r"(?:la\s+|el\s+|app\s+(?:de\s+)?)?(.+)$",
         raw,
         re.I,
     )

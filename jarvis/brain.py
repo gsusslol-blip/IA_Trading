@@ -252,25 +252,13 @@ class Brain:
         if small:
             messages = messages_with_lock(messages, is_owner=self.is_owner)
         tools = schemas_for(self.allowed_tools) if self.allowed_tools is not None else TOOL_SCHEMAS
+        # Small locals often ignore tools; still try a tool loop so PC actions can fire.
         max_tokens = SMALL_MAX_TOKENS if small else REASONING_MAX_TOKENS
         temperature = SMALL_TEMPERATURE if small else REASONING_TEMPERATURE
+        tool_rounds = 2 if small else MAX_TOOL_ROUNDS
 
         try:
-            if small:
-                raw_parts: list[str] = []
-                for piece in self._iter_tokens(
-                    messages, temperature=temperature, max_tokens=max_tokens
-                ):
-                    raw_parts.append(piece)
-                    yield piece
-                answer = self._finish("".join(raw_parts))
-                if not answer:
-                    answer = "Sistemas en línea, pero no armé una respuesta. Probá de nuevo."
-                    yield answer
-                self._store(session_id, answer)
-                return
-
-            for _ in range(MAX_TOOL_ROUNDS):
+            for _ in range(tool_rounds):
                 try:
                     response = self._chat(
                         messages,
@@ -350,7 +338,7 @@ class Brain:
             for piece in self._iter_tokens(
                 messages,
                 temperature=temperature,
-                max_tokens=SYNTHESIS_MAX_TOKENS,
+                max_tokens=SYNTHESIS_MAX_TOKENS if not small else max_tokens,
             ):
                 raw_parts.append(piece)
                 yield piece

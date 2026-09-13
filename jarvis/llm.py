@@ -77,10 +77,32 @@ def _ollama_endpoint(settings: Settings, model: str | None = None) -> LLMEndpoin
     )
 
 
+def looks_like_cloud_model(name: str) -> bool:
+    """True when LLM_MODEL points at Groq/OpenAI/Gemini ids, not local Ollama tags."""
+    n = (name or "").strip().lower()
+    if not n:
+        return False
+    if "/" in n:
+        return True
+    if n.startswith(("gpt-", "o1", "o3", "o4", "gemini-", "claude-")):
+        return True
+    if n.startswith("llama-3") or n.startswith("llama3."):
+        return True
+    return False
+
+
 def resolve_llm(settings: Settings, model: str | None = None) -> LLMEndpoint:
     provider = settings.llm_provider
     if provider == "auto":
-        if _ollama_reachable(settings.ollama_base_url):
+        preferred = (settings.llm_model or "").strip()
+        # Prefer cloud when LLM_MODEL is a cloud id: local 2B skips tools and "talks" instead of acting.
+        if preferred and looks_like_cloud_model(preferred) and settings.groq_api_key:
+            provider = "groq"
+        elif preferred and looks_like_cloud_model(preferred) and settings.openai_api_key:
+            provider = "openai"
+        elif preferred and looks_like_cloud_model(preferred) and settings.gemini_api_key:
+            provider = "gemini"
+        elif _ollama_reachable(settings.ollama_base_url):
             provider = "ollama"
         elif settings.groq_api_key:
             provider = "groq"
