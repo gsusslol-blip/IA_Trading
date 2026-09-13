@@ -29,6 +29,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install build deps
+        run: pip install python-dotenv
+
       - name: Resolve version + repo
         id: meta
         shell: bash

@@ -17,7 +17,13 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from jarvis import __version__ as LOCAL_VERSION
-from jarvis.config import DATA_DIR, ROOT
+
+try:
+    from jarvis.config import DATA_DIR, ROOT
+except Exception:  # noqa: BLE001 — tooling/CI may lack dotenv
+    ROOT = Path(__file__).resolve().parent.parent
+    DATA_DIR = ROOT / "data"
+    DATA_DIR.mkdir(exist_ok=True)
 
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:[.-].*)?$")
 
