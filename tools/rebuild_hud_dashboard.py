@@ -1,4 +1,13 @@
-<!DOCTYPE html>
+"""Rebuild index.html dashboard shell while preserving the existing JS block."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+INDEX = ROOT / "jarvis" / "static" / "index.html"
+
+HEAD = r'''<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
@@ -539,47 +548,27 @@
     </aside>
   </div>
   <button type="button" id="histBtn" title="Historial (Ctrl+H)">Hist</button>
+'''
 
-  <script>
-    const log = document.getElementById("log");
-    const form = document.getElementById("form");
-    const q = document.getElementById("q");
-    const mic = document.getElementById("mic");
-    const freeBtn = document.getElementById("free");
-    const live = document.getElementById("live");
-    const voiceEl = document.getElementById("voice");
-    const orb = document.getElementById("orb");
-    const caption = document.getElementById("caption");
-    const history = document.getElementById("history");
-    const histBtn = document.getElementById("histBtn");
-    const histClose = document.getElementById("histClose");
-    histBtn.addEventListener("click", () => toggleHistory());
-    histClose.addEventListener("click", () => toggleHistory(false));
-    document.addEventListener("keydown", (ev) => {
-      if ((ev.ctrlKey || ev.metaKey) && (ev.key === "h" || ev.key === "H")) {
-        ev.preventDefault();
-        toggleHistory();
+TAIL_PATCHES = [
+    (
+        """    function setOrb(mode) {
+      orb.classList.remove("thinking", "speaking", "listening", "shy", "tickle");
+      if (mode === "thinking") {
+        orb.classList.add("thinking", "mood-think");
+        orb.classList.remove("mood-happy", "mood-sad", "mood-scare");
+      } else if (mode === "speaking") {
+        orb.classList.add("speaking", "mood-happy");
+        orb.classList.remove("mood-think", "mood-sad", "mood-scare");
+      } else if (mode === "listening") {
+        orb.classList.add("shy");
+        setTimeout(function () {
+          orb.classList.remove("shy");
+          if (!busy && !speaking) orb.classList.add("listening");
+        }, 240);
       }
-    });
-    const canRecord = Boolean(navigator.mediaDevices && window.MediaRecorder);
-    let captionTimer = 0;
-    const WAKE = /\b(ilaria|hilaria|ilaría|oy[eé]\s+ilaria|hey\s+ilaria|ok\s+ilaria)\b/i;
-    let stream = null;
-    let analyser = null;
-    let audioCtx = null;
-    let recorder = null;
-    let chunks = [];
-    let handsFree = false;
-    let handsSince = 0;
-    let speaking = false;
-    let lastTalk = 0;
-    let voiceUrl = "";
-    let busy = false;
-    let mime = "";
-    let sessionToken = "";
-    let pushTalk = false;
-
-    const waveform = document.getElementById("waveform");
+    }""",
+        """    const waveform = document.getElementById("waveform");
     function syncWave() {
       if (!waveform) return;
       const on = orb.classList.contains("listening") || orb.classList.contains("speaking") || orb.classList.contains("thinking");
@@ -603,506 +592,23 @@
         }, 240);
       }
       syncWave();
-    }
-    orb.addEventListener("click", function () {
-      orb.classList.add("tickle");
-      setTimeout(function () { orb.classList.remove("tickle"); }, 450);
-    });
-
-    function setLive(text, hot) {
-      live.textContent = text || "En línea";
-      live.classList.toggle("busy", Boolean(hot));
-      if (!busy && !speaking) {
-        if (handsFree || (text || "").toLowerCase().includes("escuch")) setOrb("listening");
-        else setOrb("");
-      }
-    }
-
-    function historyOpen() {
-      return history.classList.contains("open");
-    }
-
-    function toggleHistory(force) {
-      const open = typeof force === "boolean" ? force : !historyOpen();
-      history.classList.toggle("open", open);
-      history.setAttribute("aria-hidden", open ? "false" : "true");
-    }
-
-    function scheduleCaptionHide() {
-      clearTimeout(captionTimer);
-      const delay = (speaking || busy) ? 400 : 7000;
-      captionTimer = setTimeout(() => {
-        if (speaking || busy) {
-          scheduleCaptionHide();
-          return;
-        }
-        caption.classList.remove("show");
-      }, delay);
-    }
-
-    function showCaption(text, role) {
-      const line = (text || "").trim();
-      if (!line) return;
-      clearTimeout(captionTimer);
-      caption.textContent = line;
-      caption.classList.toggle("user-line", role === "user");
-      caption.classList.add("show");
-      scheduleCaptionHide();
-    }
-
-    function add(role, text) {
-      const el = document.createElement("div");
-      el.className = "msg " + role;
-      el.textContent = text;
-      log.appendChild(el);
-      log.scrollTop = log.scrollHeight;
-      showCaption(text, role);
-    }
-
-    function sleep(ms) {
-      return new Promise((resolve) => setTimeout(resolve, ms));
-    }
-
-    function withAuthToken(url) {
-      if (!url || !sessionToken) return url;
-      if (url.indexOf("/api/audio/") !== 0) return url;
-      const join = url.indexOf("?") >= 0 ? "&" : "?";
-      return url + join + "token=" + encodeURIComponent(sessionToken);
-    }
-
-    function rms() {
-      // Client-side VAD for HUD Libre. Server Silero/RMS VAD runs on wake WAV before Whisper.
-      if (!analyser) return 0;
-      const data = new Uint8Array(analyser.fftSize);
-      analyser.getByteTimeDomainData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i++) {
-        const v = (data[i] - 128) / 128;
-        sum += v * v;
-      }
-      return Math.sqrt(sum / data.length);
-    }
-
-    async function ensureMic() {
-      if (stream) {
-        if (audioCtx && audioCtx.state === "suspended") await audioCtx.resume();
-        return;
-      }
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-      audioCtx = new AudioContext();
-      await audioCtx.resume();
-      const src = audioCtx.createMediaStreamSource(stream);
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      src.connect(analyser);
-      mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
-    }
-
-    function stopVoice() {
-      try { voiceEl.pause(); } catch (e) {}
-      voiceEl.removeAttribute("src");
-      if (voiceUrl) {
-        URL.revokeObjectURL(voiceUrl);
-        voiceUrl = "";
-      }
-      if (window.speechSynthesis) window.speechSynthesis.cancel();
-    }
-
-    function speakBrowser(text, done) {
-      if (!window.speechSynthesis) { done(); return; }
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = "es-AR";
-      u.rate = 1.02;
-      u.onend = done;
-      u.onerror = done;
-      window.speechSynthesis.speak(u);
-      setTimeout(done, Math.min(25000, Math.max(2000, text.length * 90)));
-    }
-
-    async function speak(text) {
-      const clipped = (text || "").trim().slice(0, 1800);
-      if (!clipped) return;
-      speaking = true;
-      setOrb("speaking");
-      let finished = false;
-      const done = () => {
-        if (finished) return;
-        finished = true;
-        speaking = false;
-        lastTalk = Date.now();
-        voiceEl.onended = null;
-        voiceEl.onerror = null;
-        stopVoice();
-        setOrb(handsFree ? "listening" : "");
-      };
-      stopVoice();
-      try {
-        const res = await fetch("/api/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: clipped }),
-        });
-        if (!res.ok) throw new Error("tts");
-        const blob = await res.blob();
-        voiceUrl = URL.createObjectURL(blob);
-        voiceEl.src = voiceUrl;
-        voiceEl.onended = done;
-        voiceEl.onerror = () => speakBrowser(clipped, done);
-        await voiceEl.play();
-        setTimeout(done, Math.min(60000, 2500 + clipped.length * 80));
-      } catch (e) {
-        speakBrowser(clipped, done);
-      }
-    }
-
-    async function playAudioUrl(url, fallbackText) {
-      if (!url) {
-        await speak(fallbackText || "");
-        return;
-      }
-      speaking = true;
-      setOrb("speaking");
-      let finished = false;
-      const done = () => {
-        if (finished) return;
-        finished = true;
-        speaking = false;
-        lastTalk = Date.now();
-        voiceEl.onended = null;
-        voiceEl.onerror = null;
-        stopVoice();
-        setOrb(handsFree ? "listening" : "");
-      };
-      stopVoice();
-      try {
-        voiceEl.src = withAuthToken(url);
-        voiceEl.onended = done;
-        voiceEl.onerror = () => speak(fallbackText || "");
-        await voiceEl.play();
-        setTimeout(done, 60000);
-      } catch (e) {
-        await speak(fallbackText || "");
-      }
-    }
-
-    function fromHandsFree(raw) {
-      const text = (raw || "").trim();
-      if (!text) return "";
-      const woke = WAKE.test(text);
-      const follow = lastTalk > 0 && Date.now() - lastTalk < 22000;
-      if (!woke && !follow) return "";
-      const cleaned = text.replace(WAKE, " ").replace(/\s+/g, " ").trim();
-      if (woke && !cleaned) return "hola";
-      return cleaned || text;
-    }
-
-    let lastSttErr = 0;
-
-    async function transcribe(blob, { quiet = false } = {}) {
-      if (!blob || blob.size < 1200) return "";
-      const fd = new FormData();
-      fd.append("file", blob, mime.includes("mp4") ? "audio.mp4" : "audio.webm");
-      try {
-        const res = await fetch("/api/stt", { method: "POST", body: fd });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          if (!quiet || Date.now() - lastSttErr > 12000) {
-            lastSttErr = Date.now();
-            const msg = typeof data.detail === "string" ? data.detail : "No pude transcribir.";
-            add("jarvis", msg);
-          }
-          return "";
-        }
-        return (data.text || "").trim();
-      } catch (err) {
-        if (!quiet || Date.now() - lastSttErr > 12000) {
-          lastSttErr = Date.now();
-          add("jarvis", "No pude transcribir: falló la red local.");
-        }
-        return "";
-      }
-    }
-
-    async function recordUtterance(maxMs) {
-      chunks = [];
-      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-      recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-      recorder.start(200);
-      mic.classList.add("hot");
-      setLive(handsFree ? "escuchando — decí Ilaria" : "escuchando", true);
-      setOrb("listening");
-      const started = Date.now();
-      let heard = false;
-      let quiet = 0;
-      while (Date.now() - started < maxMs) {
-        await sleep(80);
-        const level = rms();
-        orb.style.setProperty("--voice", Math.min(1, level / 0.12).toFixed(3));
+    }""",
+    ),
+    (
+        """        orb.style.setProperty("--voice", Math.min(1, level / 0.12).toFixed(3));""",
+        """        orb.style.setProperty("--voice", Math.min(1, level / 0.12).toFixed(3));
         if (waveform) {
           const bars = waveform.querySelectorAll(".wave-bar");
           const v = Math.min(1, level / 0.1);
           bars.forEach((bar, i) => {
             bar.style.height = (8 + v * (18 + (i % 3) * 10)).toFixed(1) + "px";
           });
-        }
-        if (level > 0.035) {
-          heard = true;
-          quiet = 0;
-        } else if (heard) {
-          quiet += 80;
-          if (quiet >= 900) break;
-        } else if (Date.now() - started > 4500) {
-          break;
-        }
-      }
-      await new Promise((resolve) => {
-        recorder.onstop = resolve;
-        try { recorder.stop(); } catch (e) { resolve(); }
-      });
-      mic.classList.remove("hot");
-      return new Blob(chunks, { type: recorder.mimeType || mime || "audio/webm" });
-    }
-
-    async function send(text) {
-      if (!text.trim() || busy) return;
-      busy = true;
-      add("user", text);
-      q.value = "";
-      setLive("pensando…", true);
-      setOrb("thinking");
-      const el = document.createElement("div");
-      el.className = "msg jarvis";
-      log.appendChild(el);
-      log.scrollTop = log.scrollHeight;
-      try {
-        const res = await fetch("/api/chat/stream", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text, speak: true }),
-        });
-        if (!res.ok || !res.body) {
-          let detail = "No pude responder.";
-          try {
-            const data = await res.json();
-            detail = data.detail || data.error || detail;
-          } catch (e) {}
-          el.textContent = detail;
-          showCaption(detail, "jarvis");
-          return;
-        }
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        let audioUrl = "";
-        let finalReply = "";
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const blocks = buf.split("\n\n");
-          buf = blocks.pop() || "";
-          for (let i = 0; i < blocks.length; i++) {
-            const block = blocks[i].trim();
-            if (!block) continue;
-            let eventName = "message";
-            const dataLines = [];
-            block.split("\n").forEach((line) => {
-              if (line.startsWith("event:")) eventName = line.slice(6).trim();
-              if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
-            });
-            if (!dataLines.length) continue;
-            let data = {};
-            try { data = JSON.parse(dataLines.join("\n")); } catch (e) { continue; }
-            if (eventName === "token" && data.text) {
-              el.textContent += data.text;
-              showCaption(el.textContent, "jarvis");
-              log.scrollTop = log.scrollHeight;
-            }
-            if (eventName === "error") {
-              el.textContent = data.detail || "Error en el stream.";
-              showCaption(el.textContent, "jarvis");
-            }
-            if (eventName === "done") {
-              finalReply = data.reply || el.textContent;
-              el.textContent = finalReply;
-              audioUrl = data.audio_url || "";
-              showCaption(finalReply, "jarvis");
-            }
-          }
-        }
-        setLive("hablando…", true);
-        await playAudioUrl(audioUrl, finalReply || el.textContent);
-      } finally {
-        busy = false;
-        setLive(handsFree ? "escuchando — decí Ilaria" : "En línea", handsFree);
-      }
-    }
-
-    async function talkOnce() {
-      if (busy || speaking || pushTalk) return;
-      pushTalk = true;
-      try {
-        await ensureMic();
-      } catch (err) {
-        add("jarvis", "Micrófono bloqueado. Permitilo o abrí http://localhost:8787 en Edge/Chrome.");
-        pushTalk = false;
-        return;
-      }
-      const blob = await recordUtterance(18000);
-      setLive("procesando voz…", true);
-      setOrb("thinking");
-      const text = await transcribe(blob);
-      pushTalk = false;
-      if (text) await send(text);
-      else setLive(handsFree ? "escuchando — decí Ilaria" : "En línea", handsFree);
-    }
-
-    async function handsLoop() {
-      setLive("escuchando — decí Ilaria", true);
-      setOrb("listening");
-      try {
-        await ensureMic();
-      } catch (err) {
-        handsFree = false;
-        freeBtn.classList.remove("hot");
-        add("jarvis", "Micrófono bloqueado.");
-        setLive("En línea");
-        return;
-      }
-      while (handsFree) {
-        if (busy || speaking || pushTalk) {
-          await sleep(200);
-          continue;
-        }
-        let startRec = false;
-        let voiced = 0;
-        const waitStart = Date.now();
-        while (handsFree && !busy && !speaking && !pushTalk && Date.now() - waitStart < 120000) {
-          await sleep(60);
-          if (rms() > 0.055) {
-            voiced += 60;
-            if (voiced >= 180) {
-              startRec = true;
-              break;
-            }
-          } else {
-            voiced = 0;
-          }
-        }
-        if (!handsFree || busy || speaking || !startRec) continue;
-        const blob = await recordUtterance(14000);
-        if (!handsFree || busy || speaking) continue;
-        if (!blob || blob.size < 1800) {
-          if (handsFree) setLive("escuchando — decí Ilaria", true);
-          await sleep(400);
-          continue;
-        }
-        setLive("procesando voz…", true);
-        setOrb("thinking");
-        const text = await transcribe(blob, { quiet: true });
-        const gated = fromHandsFree(text);
-        if (handsFree && gated) await send(gated);
-        else if (handsFree) {
-          setLive("escuchando — decí Ilaria", true);
-          await sleep(700);
-        }
-      }
-      setLive("En línea");
-    }
-
-    form.addEventListener("submit", (e) => {
-      e.preventDefault();
-      send(q.value);
-    });
-
-    if (!canRecord) {
-      mic.hidden = true;
-      freeBtn.hidden = true;
-    }
-
-    mic.addEventListener("click", () => {
-      if (busy) return;
-      talkOnce();
-    });
-
-    freeBtn.addEventListener("click", () => {
-      handsFree = !handsFree;
-      freeBtn.classList.toggle("hot", handsFree);
-      freeBtn.textContent = handsFree ? "Oír" : "Mute";
-      if (handsFree) {
-        handsLoop();
-      } else {
-        setLive("En línea");
-        setOrb("");
-      }
-    });
-
-    (async () => {
-      const me = await fetch("/api/me");
-      if (!me.ok) { location.href = "/welcome"; return; }
-      const data = await me.json();
-      if (data.token) sessionToken = data.token;
-      const name = (data.user && data.user.display_name) || "";
-      const assistant = (data.status && data.status.name) || "Ilaria";
-      document.title = assistant;
-      document.getElementById("brand").textContent = assistant.toUpperCase();
-      if (data.user && data.user.is_owner) {
-        document.getElementById("adminLink").hidden = false;
-      }
-      let greeted = false;
-      try {
-        const welcome = await fetch("/api/welcome-report");
-        if (welcome.ok) {
-          const report = await welcome.json();
-          const line = report.voice_text || report.ui_display;
-          if (line) {
-            add("jarvis", line);
-            setLive("hablando…", true);
-            await playAudioUrl(report.audio_url, line);
-            greeted = true;
-          }
-        }
-      } catch (e) {}
-      if (!greeted) {
-        add("jarvis", name ? "Hola " + name + ", ya estoy acá." : "Hola… ya estoy acá.");
-      }
-      if (!data.has_llm) {
-        add("jarvis", "Sin Ollama ni key. Clima, notas y búsqueda andan; para charla completa levantá gemma2:2b o pegá Groq en Perfil.");
-      }
-      if (canRecord) {
-        handsFree = true;
-        freeBtn.classList.add("hot");
-        freeBtn.textContent = "Oír";
-        setLive("escuchando — decí Ilaria", true);
-        handsLoop();
-      } else {
-        setLive("En línea");
-      }
-    })();
-
-    document.getElementById("out").onclick = async () => {
-      await fetch("/api/logout", { method: "POST" });
-      location.href = "/welcome";
-    };
-
-    let alertAfter = 0;
-    async function pollAlerts() {
-      try {
-        const res = await fetch("/api/alerts?after=" + alertAfter);
-        const data = await res.json();
-        for (const item of data.items || []) {
-          alertAfter = Math.max(alertAfter, item.id);
-          add("jarvis", item.text);
-          setLive("aviso", true);
-          if (item.audio_url) await playAudioUrl(item.audio_url, item.text);
-          else await speak(item.text);
-        }
-      } catch (e) {}
-    }
-    setInterval(pollAlerts, 4000);
+        }""",
+    ),
+    (
+        """    setInterval(pollAlerts, 4000);
+  </script>""",
+        """    setInterval(pollAlerts, 4000);
 
     async function refreshMetrics() {
       const ollamaEl = document.getElementById("metric-ollama");
@@ -1134,6 +640,24 @@
     }
     refreshMetrics();
     setInterval(refreshMetrics, 12000);
-  </script>
-</body>
-</html>
+  </script>""",
+    ),
+]
+
+
+def main() -> None:
+    original = INDEX.read_text(encoding="utf-8")
+    start = original.find("  <script>")
+    if start < 0:
+        raise SystemExit("script block missing")
+    script = original[start:]
+    for old, new in TAIL_PATCHES:
+        if old not in script:
+            raise SystemExit(f"patch failed: {old[:48]!r}")
+        script = script.replace(old, new, 1)
+    INDEX.write_text(HEAD + "\n" + script, encoding="utf-8")
+    print(f"OK wrote {INDEX} ({INDEX.stat().st_size} bytes)")
+
+
+if __name__ == "__main__":
+    main()
