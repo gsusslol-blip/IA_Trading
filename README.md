@@ -1,15 +1,37 @@
-# Ilaria 1.4 — asistente local (self-hosted)
+# Ilaria 1.5 — asistente local-first (F.R.I.D.A.Y.)
 
-Doble clic en `run.bat`. Celular: `dist\Ilaria-android.apk`.
+Repo: [gsusslol-blip/Ilaria](https://github.com/gsusslol-blip/Ilaria)  
+Release CDN: [latest](https://github.com/gsusslol-blip/Ilaria/releases/latest)
 
-El primer arranque descarga Piper + voz CPU si faltan (`tools/ensure_piper.ps1`). Hace falta [Ollama](https://ollama.com) y `ollama pull gemma2:2b` para el cerebro local. HUD: `http://localhost:8787/` (no https ni `127.0.0.1` en Brave). Celular: misma Wi-Fi, IP LAN que imprime al arrancar, APK en `dist\Ilaria-android.apk`.
+## Arranque (PC)
 
-## Esta máquina
+1. Doble clic en `run.bat` (o acceso **Ilaria** del escritorio).
+2. [Ollama](https://ollama.com) + `ollama pull gemma2:2b`.
+3. HUD: `http://localhost:8787/` (Brave: sin `https`, sin `127.0.0.1`).
+4. Celular: misma Wi‑Fi → `dist\Ilaria-android.apk`.
 
-Dueño local vía `.local-owner.bat` (no se publica). En un clone público, `OWNER_USERNAME` vacío: el primero que se registra es dueño de *su* copia.
+El primer arranque puede bajar Piper (`tools/ensure_piper.ps1`).
 
-## Portable (opcional)
+## Updates del código PC (sin re-bajar modelos)
 
-`build.bat` vuelve a generar `dist\JARVIS` (WebView2). No copies tu `.env` con keys. El empaquetado viejo (v1.3.4) ya no está en `dist`.
+En `.env`:
+
+```
+ILARIA_UPDATE_URL=https://github.com/gsusslol-blip/Ilaria/releases/latest/download/version.json
+ILARIA_AUTO_UPDATE=1
+ILARIA_PASSIVE_HEAL=1
+```
+
+Al arrancar, si hay release más nueva, descarga el ZIP liviano de `jarvis/` (SHA256), hace backup en `data/updates/` y aplica allowlist. No toca Ollama, Piper ni `data/`.
+
+Publicar: `git tag pc-vX.Y.Z && git push origin pc-vX.Y.Z` (Action `PC update release`).
+
+## Dueño local
+
+`.local-owner.bat` (no se publica). En un clone, el primero que se registra es dueño de *su* PC.
+
+## Portable
+
+`build.bat` → `dist\JARVIS` (WebView2). No copies `.env` con keys.
 
 No es consejo médico ni financiero.
