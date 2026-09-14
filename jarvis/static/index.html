@@ -525,7 +525,14 @@
 
     <aside class="sidebar-right">
       <div class="widget-box">
-        <h3>Estado de la PC</h3>
+        <h3>Misión</h3>
+        <div class="metric-row"><span>Pack</span><strong id="metric-pack">—</strong></div>
+        <div class="metric-row"><span>Próximo</span><strong id="metric-next">—</strong></div>
+        <div class="metric-row"><span>Última acción</span><strong id="metric-action">—</strong></div>
+        <div class="metric-row"><span>Continuidad</span><strong id="metric-continue">—</strong></div>
+      </div>
+      <div class="widget-box">
+        <h3>Estado</h3>
         <div class="metric-row"><span>Ollama LLM</span><strong class="text-green" id="metric-ollama">—</strong></div>
         <div class="metric-row"><span>Puerto HUD</span><strong id="metric-port">—</strong></div>
         <div class="metric-row"><span>Voz</span><strong id="metric-tts">—</strong></div>
@@ -973,15 +980,22 @@
         return;
       }
       while (handsFree) {
-        if (busy || speaking || pushTalk) {
+        if (busy || pushTalk) {
           await sleep(200);
           continue;
         }
         let startRec = false;
         let voiced = 0;
         const waitStart = Date.now();
-        while (handsFree && !busy && !speaking && !pushTalk && Date.now() - waitStart < 120000) {
+        while (handsFree && !busy && !pushTalk && Date.now() - waitStart < 120000) {
           await sleep(60);
+          if (speaking && rms() > 0.09) {
+            try { voiceEl.pause(); voiceEl.currentTime = 0; } catch (e) {}
+            speaking = false;
+            setLive("te escucho — corté la voz", true);
+            setOrb("listening");
+          }
+          if (speaking) continue;
           if (rms() > 0.055) {
             voiced += 60;
             if (voiced >= 180) {
@@ -1064,6 +1078,17 @@
             await playAudioUrl(report.audio_url, line);
             greeted = true;
           }
+          const packEl = document.getElementById("metric-pack");
+          const nextEl = document.getElementById("metric-next");
+          const actEl = document.getElementById("metric-action");
+          const contEl = document.getElementById("metric-continue");
+          if (packEl) packEl.textContent = report.pack || "—";
+          if (nextEl) nextEl.textContent = report.next_reminder || "sin timers";
+          if (actEl) actEl.textContent = report.last_action || "—";
+          if (contEl) contEl.textContent = report.continue_hint || "—";
+          if (report.continue_hint) {
+            add("jarvis", "Continuidad: «" + report.continue_hint + "». Decí deshacer si la última acción fue un error.");
+          }
         }
       } catch (e) {}
       if (!greeted) {
@@ -1130,6 +1155,17 @@
         if (andEl) andEl.textContent = meta.min_required_android_client
           ? ("min " + meta.min_required_android_client)
           : "—";
+      } catch (e) {}
+      try {
+        const mission = await fetch("/api/mission").then((r) => r.json());
+        const packEl = document.getElementById("metric-pack");
+        const nextEl = document.getElementById("metric-next");
+        const actEl = document.getElementById("metric-action");
+        const contEl = document.getElementById("metric-continue");
+        if (packEl) packEl.textContent = mission.pack || "—";
+        if (nextEl) nextEl.textContent = mission.next_reminder || "sin timers";
+        if (actEl) actEl.textContent = mission.last_action || "—";
+        if (contEl) contEl.textContent = mission.continue_hint || "—";
       } catch (e) {}
     }
     refreshMetrics();

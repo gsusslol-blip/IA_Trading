@@ -304,8 +304,16 @@ def routine_style(timezone: str) -> str:
     return f"{ROUTINE_STYLES[slot]}\nLocal clock context: {format_local_when(timezone)}."
 
 
-def welcome_script(*, address: str, status: str = "", weather: str = "", hour: int = 12) -> str:
-    """Short spoken greeting only — no system dump, apps, or weather."""
+def welcome_script(
+    *,
+    address: str,
+    status: str = "",
+    weather: str = "",
+    hour: int = 12,
+    pending: str = "",
+    journal: str = "",
+) -> str:
+    """Spoken briefing: greeting + optional pending / journal / weather crumbs."""
     if 5 <= hour < 12:
         hello = "Buen día"
     elif 12 <= hour < 19:
@@ -315,5 +323,23 @@ def welcome_script(*, address: str, status: str = "", weather: str = "", hour: i
     who = address.strip() or "señor"
     lower = who.lower()
     if lower in {"papá", "papa", "pá", "pa"} or lower.startswith("papá") or lower.startswith("papa"):
-        return f"{hello}, {who}. Ya estoy acá con vos."
-    return f"{hello}, {who}."
+        base = f"{hello}, {who}. Ya estoy acá con vos."
+    else:
+        base = f"{hello}, {who}."
+    bits: list[str] = []
+    pend = (pending or "").strip()
+    if pend and pend.lower() not in {"no pending reminders.", "(none)", "none"}:
+        first = pend.splitlines()[0].lstrip("- ").strip()
+        if first:
+            bits.append(f"Pendiente: {first[:90]}")
+    j = (journal or "").strip()
+    if j and "vacío" not in j.lower() and "no hay" not in j.lower() and "empty" not in j.lower():
+        line = j.splitlines()[-1].strip()[:80]
+        if line:
+            bits.append(f"Ayer anotaste: {line}")
+    w = (weather or "").strip()
+    if w and len(w) < 120:
+        bits.append(w.split(".")[0][:90])
+    if not bits:
+        return base
+    return f"{base} {' · '.join(bits)}"

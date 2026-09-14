@@ -33,7 +33,11 @@ _HEAVY_WAIT = "Demasiadas operaciones. Esperá un segundo."
 
 def _bind_surface(brain: Any, payload: ChatIn) -> None:
     surface = (payload.client or "hud").strip().lower()
-    brain.actions.client_surface = "android" if surface == "android" else "hud"
+    # Phone clients share phone_hands; HUD stays on PC tools.
+    if surface in {"android", "ios", "iphone", "ipad"}:
+        brain.actions.client_surface = "ios" if surface in {"ios", "iphone", "ipad"} else "android"
+    else:
+        brain.actions.client_surface = "hud"
     brain.actions.phone_queue = []
     device = payload.device or {}
     parts = []
@@ -47,8 +51,10 @@ def _bind_surface(brain: Any, payload: ChatIn) -> None:
         parts.append(str(device.get("model"))[:40])
     if device.get("app_version") or device.get("versionName"):
         parts.append(f"app {device.get('app_version') or device.get('versionName')}")
+    if surface in {"ios", "iphone", "ipad"}:
+        parts.append("ios")
     brain.actions.device_note = ", ".join(parts)
-    if surface == "android":
+    if brain.actions.client_surface == "android":
         from jarvis.client_compat import android_upgrade_hint
 
         brain.actions.android_upgrade_hint = android_upgrade_hint(device)
@@ -358,10 +364,35 @@ def create_hud(state: AppState) -> FastAPI:
     async def welcome_report(request: Request) -> dict[str, Any]:
         user = require_user(request)
         settings = state.settings_for(user)
+        brain = state.brain_for(user)
         now = datetime.now(ZoneInfo(settings.timezone))
+        pending = brain.memory.pending_reminders()
+        next_rem = brain.memory.next_reminder_line()
+        journal = ""
+        try:
+            journal = brain.actions.read_daily_journal()
+        except Exception:
+            journal = ""
+        weather = ""
+        try:
+            city = (user.city or brain.memory.recall("ciudad") or "Buenos Aires").strip()
+            if city and not city.startswith("No fact"):
+                from jarvis.tools import make_executor
+
+                weather = make_executor(settings, brain.memory, brain.actions)(
+                    "weather",
+                    json.dumps({"city": city}, ensure_ascii=False),
+                )
+                if isinstance(weather, str) and len(weather) > 100:
+                    weather = weather.split(".")[0][:90]
+        except Exception:
+            weather = ""
         voice = welcome_script(
             address=user.address_as.strip() or user.display_name,
             hour=now.hour,
+            pending=pending if "No pending" not in pending else "",
+            journal=journal if "todavia no" not in journal.lower() else "",
+            weather=weather if isinstance(weather, str) else "",
         )
         audio_url = None
         try:
@@ -373,12 +404,29 @@ def create_hud(state: AppState) -> FastAPI:
             audio_url = audio_api_path(path.name)
         except Exception:
             audio_url = None
+        continue_hint = brain.continue_hint(f"u{user.id}")
         return {
             "status": "online",
             "voice_text": voice,
             "audio_url": audio_url,
             "ui_display": f"{settings.assistant_name} v{__version__}",
             "pack": routine_slot(now.hour),
+            "next_reminder": next_rem,
+            "last_action": getattr(brain.actions, "last_action_label", "") or "",
+            "continue_hint": continue_hint,
+        }
+
+    @app.get("/api/mission")
+    async def mission(request: Request) -> dict[str, Any]:
+        user = require_user(request)
+        brain = state.brain_for(user)
+        settings = state.settings_for(user)
+        now = datetime.now(ZoneInfo(settings.timezone))
+        return {
+            "pack": routine_slot(now.hour),
+            "next_reminder": brain.memory.next_reminder_line(),
+            "last_action": getattr(brain.actions, "last_action_label", "") or "",
+            "continue_hint": brain.continue_hint(f"u{user.id}"),
         }
 
     @app.post("/api/profile")

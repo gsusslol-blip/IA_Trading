@@ -70,6 +70,21 @@ _APPS: dict[str, list[str]] = {
     "word": [r"%ProgramFiles%\Microsoft Office\root\Office16\WINWORD.EXE"],
     "excel": [r"%ProgramFiles%\Microsoft Office\root\Office16\EXCEL.EXE"],
     "steam": [r"%ProgramFiles(x86)%\Steam\steam.exe"],
+    "taskmgr": ["taskmgr.exe"],
+    "administrador de tareas": ["taskmgr.exe"],
+    "tareas": ["taskmgr.exe"],
+    "cmd": ["cmd.exe"],
+    "terminal": ["wt.exe", "cmd.exe"],
+    "powershell": ["powershell.exe"],
+    "snip": ["SnippingTool.exe"],
+    "recortes": ["SnippingTool.exe"],
+    "configuracion": ["ms-settings:"],
+    "configuración": ["ms-settings:"],
+    "settings": ["ms-settings:"],
+    "wifi": ["ms-settings:network-wifi"],
+    "bluetooth": ["ms-settings:bluetooth"],
+    "sonido": ["ms-settings:sound"],
+    "actualizaciones": ["ms-settings:windowsupdate"],
 }
 
 _FOLDERS: dict[str, list[Path]] = {
@@ -122,6 +137,27 @@ class Actions:
         self.device_note = ""
         self.android_upgrade_hint = ""
         self.phone_queue: list[dict[str, Any]] = []
+        self._undo: dict[str, Any] | None = None
+        self.last_action_label = ""
+
+    def push_undo(self, kind: str, **payload: Any) -> None:
+        self._undo = {"kind": kind, **payload, "ts": time.time()}
+
+    def undo_last(self) -> str:
+        item = self._undo
+        self._undo = None
+        if not item or (time.time() - float(item.get("ts") or 0)) > 30:
+            return "No hay nada reciente para deshacer."
+        kind = str(item.get("kind") or "")
+        if kind == "volume":
+            prev = item.get("previous")
+            if prev is None:
+                return "No guardé el volumen anterior."
+            return self.set_volume(int(prev), track_undo=False)
+        if kind == "clipboard":
+            prev = str(item.get("previous") or "")
+            return self.set_clipboard(prev, track_undo=False)
+        return "Esa acción no se puede deshacer."
 
     def capabilities(self) -> str:
         smtp = "ready" if self.settings.has_smtp else "needs SMTP_* in .env"
@@ -146,7 +182,7 @@ class Actions:
             "reading the SMS inbox, root, or hardware you do not own.\n"
             "Stack diagnose: get_system_health / check_lan_status; "
             "owner remediación allowlisted: relaunch_service (ollama|piper|ha_ping).\n"
-            "On the Ilaria Android app: phone_hands (dialer, SMS draft, WhatsApp draft, maps, "
+            "On the Ilaria Android/iOS app: phone_hands (dialer, SMS draft, WhatsApp draft, maps, "
             "apps, torch, camera, gallery, volume, alarm/timer, settings, share)."
         )
 
@@ -323,9 +359,16 @@ class Actions:
         image.save(path)
         return f"Screenshot saved to {path}"
 
-    def set_clipboard(self, text: str) -> str:
+    def set_clipboard(self, text: str, track_undo: bool = True) -> str:
         if sys.platform != "win32":
             return "Clipboard only wired on Windows."
+        if track_undo:
+            try:
+                prev = self.get_clipboard()
+                if not str(prev).startswith("Clipboard only") and not str(prev).startswith("ERROR"):
+                    self.push_undo("clipboard", previous=prev if prev != "(empty clipboard)" else "")
+            except Exception:
+                pass
         quoted = text.replace("'", "''")
         completed = subprocess.run(
             ["powershell", "-NoProfile", "-Command", f"Set-Clipboard -Value '{quoted}'"],
@@ -335,7 +378,43 @@ class Actions:
         )
         if completed.returncode != 0:
             return f"Clipboard failed: {completed.stderr.strip() or completed.returncode}"
-        return "Copied to clipboard."
+        self.last_action_label = "portapapeles"
+        return "Copied to clipboard. Decí deshacer si te arrepentís."
+
+    def set_volume(self, level: int, track_undo: bool = True) -> str:
+        if sys.platform != "win32":
+            return "Volume only wired on Windows."
+        try:
+            value = max(0, min(100, int(level)))
+        except (TypeError, ValueError):
+            return "Nivel de volumen: un numero de 0 a 100."
+        try:
+            from ctypes import POINTER, cast
+            import ctypes
+
+            from comtypes import CLSCTX_ALL
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        except ImportError:
+            return "Falta pycaw. Instala: pip install pycaw comtypes"
+        try:
+            ctypes.windll.ole32.CoInitialize(None)
+        except Exception:
+            pass
+        try:
+            speakers = AudioUtilities.GetSpeakers()
+            interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+            if track_undo:
+                try:
+                    prev = int(round(float(volume.GetMasterVolumeLevelScalar()) * 100))
+                    self.push_undo("volume", previous=prev)
+                except Exception:
+                    pass
+            volume.SetMasterVolumeLevelScalar(value / 100.0, None)
+        except Exception as exc:  # noqa: BLE001
+            return f"No pude cambiar el volumen: {exc}"
+        self.last_action_label = f"volumen {value}%"
+        return f"Volumen al {value}%. Decí deshacer si te arrepentís."
 
     def get_clipboard(self) -> str:
         """Read Windows clipboard; PowerShell first, ctypes CF_UNICODETEXT as fallback."""
@@ -407,7 +486,19 @@ class Actions:
                     err = (completed.stderr or completed.stdout or "").strip()
                     return f"Abort failed: {err or completed.returncode}"
                 return "Apagado/reinicio cancelado."
-            return "Acción inválida. Usá: shutdown, restart o abort."
+            if key in {"lock", "bloquear", "lockscreen"}:
+                completed = subprocess.run(
+                    ["rundll32.exe", "user32.dll,LockWorkStation"],
+                    capture_output=True,
+                    text=True,
+                    timeout=12,
+                    creationflags=_CREATE_NO_WINDOW,
+                )
+                if completed.returncode != 0:
+                    err = (completed.stderr or completed.stdout or "").strip()
+                    return f"Lock failed: {err or completed.returncode}"
+                return "Pantalla bloqueada."
+            return "Acción inválida. Usá: shutdown, restart, abort o lock."
         except Exception as exc:  # noqa: BLE001
             return f"Power control failed: {exc}"
 
@@ -419,34 +510,6 @@ class Actions:
             return f"Unknown media action. Use: {', '.join(_VK)}"
         _press_vk(vk)
         return f"Media: {action}"
-
-    def set_volume(self, level: int) -> str:
-        if sys.platform != "win32":
-            return "Volume only wired on Windows."
-        try:
-            value = max(0, min(100, int(level)))
-        except (TypeError, ValueError):
-            return "Nivel de volumen: un numero de 0 a 100."
-        try:
-            from ctypes import POINTER, cast
-            import ctypes
-
-            from comtypes import CLSCTX_ALL
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-        except ImportError:
-            return "Falta pycaw. Instala: pip install pycaw comtypes"
-        try:
-            ctypes.windll.ole32.CoInitialize(None)
-        except Exception:
-            pass
-        try:
-            speakers = AudioUtilities.GetSpeakers()
-            interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            volume = cast(interface, POINTER(IAudioEndpointVolume))
-            volume.SetMasterVolumeLevelScalar(value / 100.0, None)
-        except Exception as exc:  # noqa: BLE001
-            return f"No pude cambiar el volumen: {exc}"
-        return f"Volumen al {value}%."
 
     def system_status(self) -> str:
         from jarvis.packs import format_local_when

@@ -8,7 +8,8 @@ Release CDN: [latest](https://github.com/gsusslol-blip/Ilaria/releases/latest)
 1. Doble clic en `run.bat` (o acceso **Ilaria** del escritorio).
 2. [Ollama](https://ollama.com) + `ollama pull gemma2:2b`.
 3. HUD: `http://localhost:8787/` (Brave: sin `https`, sin `127.0.0.1`).
-4. Celular: misma Wi‑Fi → `dist\Ilaria-android.apk`.
+4. Celular Android: misma Wi‑Fi → `dist\Ilaria-android.apk`.
+5. iPhone/iPad: carpeta `ios/` (Xcode + [README](ios/README.md)). Misma LAN, `client: ios`.
 
 El primer arranque puede bajar Piper (`tools/ensure_piper.ps1`).
 

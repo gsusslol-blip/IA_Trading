@@ -98,6 +98,31 @@ object PhoneHands {
             "calendar" -> start(app, Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_CALENDAR))
             "contacts" -> start(app, Intent(Intent.ACTION_VIEW, ContactsContract.Contacts.CONTENT_URI))
             "email" -> start(app, Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${target}")).putExtra(Intent.EXTRA_TEXT, text))
+            "screenshot" -> {
+                // No public screenshot API; open share sheet with hint + gallery fallback.
+                val share = Intent(Intent.ACTION_SEND).setType("text/plain")
+                share.putExtra(Intent.EXTRA_TEXT, "Captura: usá Power + Volumen abajo, o el botón de captura del sistema.")
+                start(app, Intent.createChooser(share, "Ilaria"))
+                return "screenshot_hint"
+            }
+            "lock" -> {
+                val dpm = app.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+                try {
+                    dpm?.lockNow()
+                } catch (_: Exception) {
+                }
+                // Fallback: open lock-screen settings if no device-admin.
+                start(app, Intent(Settings.ACTION_SECURITY_SETTINGS))
+            }
+            "clipboard_get" -> {
+                val cm = app.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val clip = cm.primaryClip?.getItemAt(0)?.coerceToText(app)?.toString().orEmpty()
+                return "clipboard:$clip"
+            }
+            "translate" -> {
+                val q = Uri.encode(text.ifBlank { target })
+                start(app, Intent(Intent.ACTION_VIEW, Uri.parse("https://translate.google.com/?sl=auto&tl=es&text=$q&op=translate")))
+            }
             else -> { }
         }
         return null

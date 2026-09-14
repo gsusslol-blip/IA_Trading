@@ -237,9 +237,9 @@ def build_system_prompt(
             rag_block = ""
     if compact:
         extra = ""
-        if (client_surface or "") == "android":
+        if (client_surface or "") in {"android", "ios"}:
             extra = (
-                "\nPHONE: user is on Android. Use phone_hands for device. "
+                "\nPHONE: user is on the Ilaria mobile app. Use phone_hands for device. "
                 f"{(device_note or '')[:160]}"
             )
         return compact_system_prompt(
@@ -262,9 +262,9 @@ def build_system_prompt(
         is_owner=is_owner,
     )
     phone_block = ""
-    if (client_surface or "") == "android":
+    if (client_surface or "") in {"android", "ios"}:
         phone_block = (
-            "\nPHONE SESSION: the user is on the Ilaria Android app. "
+            "\nPHONE SESSION: the user is on the Ilaria mobile app (Android or iOS). "
             "Use phone_hands for calls, SMS/WhatsApp drafts, maps, any installed app "
             "except banking, torch, camera, volume, alarms, settings. Never open bank apps. "
             "Do NOT use PC open_app/screenshot/power_control "

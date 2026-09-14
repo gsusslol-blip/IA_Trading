@@ -32,6 +32,7 @@ ALLOWED = frozenset(
         "volume",
         "share",
         "clipboard",
+        "clipboard_get",
         "alarm",
         "timer",
         "calendar",
@@ -39,6 +40,9 @@ ALLOWED = frozenset(
         "email",
         "music",
         "youtube",
+        "screenshot",
+        "lock",
+        "translate",
     }
 )
 
@@ -94,8 +98,23 @@ def queue_action(queue: list[dict[str, Any]], raw: dict[str, Any]) -> str:
         item["target"] = phone
         if text:
             item["text"] = text
-    elif action in {"maps", "navigate", "browser", "search", "share", "clipboard", "email", "music", "youtube"}:
-        if not target and not text:
+    elif action in {
+        "maps",
+        "navigate",
+        "browser",
+        "search",
+        "share",
+        "clipboard",
+        "email",
+        "music",
+        "youtube",
+        "translate",
+    }:
+        if action == "clipboard" and not target and not text:
+            return "Falta texto para copiar."
+        if action == "translate" and not target and not text:
+            return "Falta texto para traducir."
+        if action not in {"clipboard", "translate"} and not target and not text:
             return "Falta destino o texto."
         if action == "browser":
             url = target or text
@@ -104,10 +123,16 @@ def queue_action(queue: list[dict[str, Any]], raw: dict[str, Any]) -> str:
             if not url.startswith(("http://", "https://")):
                 return "URL invalida."
             item["target"] = url[:2000]
+        elif action == "translate":
+            q = quote((target or text)[:500])
+            item["target"] = f"https://translate.google.com/?sl=auto&tl=es&text={q}&op=translate"
+            item["action"] = "browser"
         else:
             item["target"] = (target or text)[:500]
-            if text and action != "browser":
+            if text and action not in {"browser"}:
                 item["text"] = text
+    elif action in {"screenshot", "lock", "clipboard_get"}:
+        pass
     elif action == "open_app":
         key = (target or text).strip()
         if not key or len(key) > 80 or "/" in key or "\\" in key or ".." in key:

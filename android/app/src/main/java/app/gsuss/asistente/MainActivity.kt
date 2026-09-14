@@ -61,7 +61,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        AlertNotify.ensureChannel(this)
         val need = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            need.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
         val missing = need.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
@@ -332,9 +336,19 @@ private fun Chat(prefs: Prefs, notes: NotesCache, onProfile: () -> Unit, onOut: 
             }
             val reply = out.text
             out.phone.forEach { item ->
-                when (PhoneHands.run(context, item)) {
+                when (val signal = PhoneHands.run(context, item)) {
                     "clear_http" -> brain.rebuildClients()
                     "refresh_device_snap" -> { /* next chat already ships DeviceSnap */ }
+                    "screenshot_hint" -> {
+                        caption = "Para capturar: Power + Volumen abajo."
+                    }
+                    else -> {
+                        if (signal != null && signal.startsWith("clipboard:")) {
+                            val clip = signal.removePrefix("clipboard:").ifBlank { "(vacío)" }
+                            caption = "Portapapeles: $clip"
+                            log.add(Bubble(false, "Portapapeles: $clip"))
+                        }
+                    }
                 }
             }
             if (caption.isBlank()) caption = reply
@@ -372,6 +386,12 @@ private fun Chat(prefs: Prefs, notes: NotesCache, onProfile: () -> Unit, onOut: 
             }
             online = ok
             pcLinked = ok && prefs.token.isNotBlank()
+            if (ok && prefs.token.isNotBlank()) {
+                try {
+                    AlertNotify.poll(context, brain, prefs)
+                } catch (_: Exception) {
+                }
+            }
             if (ok && !lastOnline) {
                 if (prefs.token.isNotBlank()) {
                     try {

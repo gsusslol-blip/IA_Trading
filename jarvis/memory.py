@@ -303,6 +303,23 @@ class Memory:
         ]
         return "\n".join(pending) if pending else "No pending reminders."
 
+    def next_reminder_line(self) -> str:
+        """Soonest pending reminder for HUD mission strip / briefing."""
+        items: list[tuple[str, str]] = []
+        for item in self._data.get("reminders", []):
+            if item.get("done") == "1":
+                continue
+            when = str(item.get("when") or "")
+            text = str(item.get("text") or "").strip()
+            if when and text:
+                items.append((when, text))
+        if not items:
+            return ""
+        items.sort(key=lambda pair: pair[0])
+        when, text = items[0]
+        stamp = when[11:16] if len(when) >= 16 else when
+        return f"{stamp} · {text[:60]}"
+
     def as_prompt(self) -> str:
         facts: dict[str, str] = self._data.get("facts", {})
         if not facts:

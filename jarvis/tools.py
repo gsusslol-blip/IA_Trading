@@ -83,6 +83,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         {"level": {"type": "integer"}},
         ["level"],
     ),
+    _fn(
+        "undo_last",
+        "Undo the last reversible PC action within ~30s (volume or clipboard). Use when the user says deshacer/undo.",
+        {},
+    ),
     _fn("calculate", "Exact arithmetic. Expression like 12.5 * 1.21", {"expression": {"type": "string"}}, ["expression"]),
     _fn(
         "remember",
@@ -131,7 +136,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     ),
     _fn(
         "open_app",
-        "Open an allowlisted PC app: chrome, edge, notepad, calculadora, spotify, discord, whatsapp, telegram, cursor, vscode, word, excel, steam, paint, explorer.",
+        "Open a PC app: chrome, edge, firefox, notepad, calculadora, paint, explorer, "
+        "spotify, discord, whatsapp, telegram, cursor, vscode, word, excel, steam, "
+        "taskmgr, terminal, powershell, snip/recortes, configuracion, wifi, bluetooth, sonido. "
+        "Also resolves Start Menu shortcuts by name.",
         {"name": {"type": "string"}},
         ["name"],
     ),
@@ -175,8 +183,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     _fn(
         "power_control",
         "OWNER power on this Windows PC: action=shutdown (/s /t 30), restart (/r /t 10), "
-        "or abort (/a). Only when the user clearly orders apagar/reiniciar/cancelar apagado.",
-        {"action": {"type": "string", "description": "shutdown | restart | abort"}},
+        "abort (/a), or lock (LockWorkStation). Only when the user clearly orders "
+        "apagar/reiniciar/cancelar apagado/bloquear pantalla.",
+        {"action": {"type": "string", "description": "shutdown | restart | abort | lock"}},
         ["action"],
     ),
     _fn(
@@ -238,7 +247,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     ),
     _fn(
         "phone_hands",
-        "Control the user's Android phone when they are talking from the Ilaria app. "
+        "Control the user's phone when they are talking from the Ilaria Android or iOS app. "
         "action: call, sms, whatsapp, maps, navigate, browser, search, youtube, music, "
         "open_app, torch, camera, gallery, settings, wifi, bluetooth, volume, share, "
         "clipboard, alarm, timer, calendar, contacts, email, "
@@ -437,6 +446,8 @@ def make_executor(
             except (TypeError, ValueError):
                 return "Nivel de volumen: un numero de 0 a 100."
             return actions.set_volume(level)
+        if name == "undo_last":
+            return actions.undo_last()
         if name == "calculate":
             return actions.calculate(str(args.get("expression", "")))
         if name == "remember":
@@ -526,13 +537,13 @@ def make_executor(
         if name == "home_states":
             return actions.home_states(str(args.get("domain", "") or ""))
         if name == "phone_hands":
-            if getattr(actions, "client_surface", "hud") != "android":
+            if getattr(actions, "client_surface", "hud") not in {"android", "ios"}:
                 return "Eso se hace en el celular. Pedilo desde la app Ilaria (Wi-Fi)."
             from jarvis.phone_hands import queue_action
 
             return queue_action(actions.phone_queue, args)
         if name == "queue_phone_fix":
-            if getattr(actions, "client_surface", "hud") != "android":
+            if getattr(actions, "client_surface", "hud") not in {"android", "ios"}:
                 return "Eso se hace en el celular. Pedilo desde la app Ilaria (Wi-Fi)."
             from jarvis.phone_hands import queue_phone_fix
 
@@ -572,6 +583,7 @@ PC_TOOLS = {
     "media",
     "play_music",
     "set_volume",
+    "undo_last",
     "send_email",
     "home_assistant",
     "compose_whatsapp",

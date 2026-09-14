@@ -25,7 +25,8 @@ def try_local_command(
     raw = re.sub(r"^(?:hey\s+)?ilaria\b[\s,.:\-]*", "", raw, flags=re.I).strip()
     lower = raw.lower()
     city = _city(raw, memory)
-    android = (surface or "hud").strip().lower() == "android"
+    phone = (surface or "hud").strip().lower() in {"android", "ios", "iphone", "ipad"}
+    android = phone  # local phone routing (Android + iOS apps)
 
     def run(tool: str, **args: object) -> str:
         if allowed is not None and tool not in allowed:
@@ -34,6 +35,9 @@ def try_local_command(
 
     if re.search(r"\b(ayuda|help|que podes|qué podés|que podes hacer|capacidades|comandos)\b", lower):
         return _help(settings)
+
+    if re.search(r"\b(deshac[eé]r?|undo|arrepent)\b", lower):
+        return run("undo_last")
 
     if re.search(r"\b(hora|fecha|que dia|qué día|que dia es|ahora mismo)\b", lower) or lower in {
         "ahora",
@@ -91,29 +95,124 @@ def try_local_command(
             lower,
         ):
             return run("queue_phone_fix", action="refresh_device_snap")
+        if re.search(r"\b(bluetooth)\b", lower) and re.search(
+            r"\b(abr[ií]|ajustes|configuraci[oó]n|settings)\b", lower
+        ):
+            return run("phone_hands", action="bluetooth")
+        if re.search(r"\b(ajustes|configuraci[oó]n|settings)\b", lower) and not re.search(
+            r"\b(wifi|wi[\-\s]?fi|app|ilaria)\b", lower
+        ):
+            return run("phone_hands", action="settings")
+        # Phone volume / mute / media — never PC pycaw/VK.
+        vol_phone = re.search(
+            r"(?:volumen|volume)(?:\s+(?:al|a|en|del?))?\s+(\d{1,3})\s*%?",
+            lower,
+        )
+        if vol_phone:
+            return run("phone_hands", action="volume", target=str(int(vol_phone.group(1))))
+        if re.search(
+            r"\b(sub[ií]|aument[aá]|m[aá]s|arriba)\b.{0,16}\b(volumen|volume|sonido)\b|"
+            r"\b(volumen|volume|sonido)\b.{0,12}\b(sub[ií]|aument[aá]|m[aá]s|arriba)\b|"
+            r"\bvol[\+\s]*up\b",
+            lower,
+        ):
+            return run("phone_hands", action="volume", target="up")
+        if re.search(
+            r"\b(baj[aá]|reduc[ií]|menos|abajo)\b.{0,16}\b(volumen|volume|sonido)\b|"
+            r"\b(volumen|volume|sonido)\b.{0,12}\b(baj[aá]|reduc[ií]|menos|abajo)\b|"
+            r"\bvol[\-\s]*down\b",
+            lower,
+        ):
+            return run("phone_hands", action="volume", target="down")
+        if re.search(r"\b(silenci(?:ar|[oaá])|mute(?:ar)?|sin\s+sonido)\b", lower):
+            return run("phone_hands", action="volume", target="mute")
+        if re.search(
+            r"\b(captura(?:\s+de\s+pantalla)?|screenshot|sac[aá](?:me)?\s+(?:una\s+)?(?:foto|captura)|"
+            r"foto\s+de\s+pantalla)\b",
+            lower,
+        ):
+            return run("phone_hands", action="screenshot")
+        clip_set_p = re.match(
+            r"^(?:copi[aá]|copiar|al\s+portapapeles|clipboard)\s*[:\-]?\s+(.+)$",
+            raw,
+            re.I | re.S,
+        )
+        if clip_set_p and not re.search(r"\b(le[eé]|mostr|qu[eé] hay)\b", lower):
+            return run("phone_hands", action="clipboard", target="", text=clip_set_p.group(1).strip())
+        if re.search(
+            r"\b(portapapeles|clipboard|lo\s+que\s+copi[eé]|qu[eé]\s+copi[eé])\b",
+            lower,
+        ):
+            return run("phone_hands", action="clipboard_get")
+        if re.search(r"\b(contactos)\b", lower) and re.search(r"\b(abr[ií]|mostr|lista)\b", lower):
+            return run("phone_hands", action="contacts")
+        if re.search(r"\b(calendario|agenda)\b", lower) and re.search(
+            r"\b(abr[ií]|mostr)\b", lower
+        ):
+            return run("phone_hands", action="calendar")
+        if re.search(r"\b(compart[ií]|share)\b", lower):
+            body = re.sub(r"^.*\b(?:compart[ií]|share)\s+", "", raw, flags=re.I).strip()
+            if body:
+                return run("phone_hands", action="share", text=body)
+        alarm = re.search(
+            r"\b(?:alarma|alarm)\s+(?:a\s+las\s+|para\s+las\s+|a\s+)?(\d{1,2})(?:[:\.](\d{2}))?\b",
+            lower,
+        )
+        if alarm:
+            hh = int(alarm.group(1))
+            mm = int(alarm.group(2) or "0")
+            return run("phone_hands", action="alarm", target=f"{hh}:{mm:02d}")
+        call = re.search(
+            r"(?:llam[aá]|marca[lr]?|disc[aá])\s+(?:al\s+|a\s+)?([+\d][\d\s\-()]{6,})",
+            raw,
+            re.I,
+        )
+        if call:
+            return run("phone_hands", action="call", target=re.sub(r"[^\d+]", "", call.group(1)))
+        sms = re.search(
+            r"(?:sms|mensaje(?:\s+de\s+texto)?)\s+(?:a|al)\s+([+\d][\d\s\-()]{6,})\s*[:\-]?\s*(.*)$",
+            raw,
+            re.I | re.S,
+        )
+        if sms:
+            return run(
+                "phone_hands",
+                action="sms",
+                target=re.sub(r"[^\d+]", "", sms.group(1)),
+                text=(sms.group(2) or "").strip(),
+            )
 
-    vol = re.search(r"volumen(?:\s+(?:al|a|en))?\s+(\d{1,3})\s*%?", lower)
+    vol = re.search(
+        r"(?:volumen|volume)(?:\s+(?:al|a|en|del?))?\s+(\d{1,3})\s*%?",
+        lower,
+    )
     if vol:
         return run("set_volume", level=int(vol.group(1)))
+    if re.search(
+        r"\b(sub[ií]|aument[aá]|m[aá]s|arriba)\b.{0,16}\b(volumen|volume|sonido)\b|"
+        r"\b(volumen|volume|sonido)\b.{0,12}\b(sub[ií]|aument[aá]|m[aá]s|arriba)\b|"
+        r"\bvol[\+\s]*up\b",
+        lower,
+    ):
+        return run("media", action="vol_up")
+    if re.search(
+        r"\b(baj[aá]|reduc[ií]|menos|abajo)\b.{0,16}\b(volumen|volume|sonido)\b|"
+        r"\b(volumen|volume|sonido)\b.{0,12}\b(baj[aá]|reduc[ií]|menos|abajo)\b|"
+        r"\bvol[\-\s]*down\b",
+        lower,
+    ):
+        return run("media", action="vol_down")
 
     if re.search(r"\b(silenci(?:ar|[oaá])|mute(?:ar)?|sin\s+sonido)\b", lower):
         return run("media", action="mute")
 
-    if re.search(
-        r"\b(paus[aá]|pause|play|reproduc[ií]|siguiente|next|anterior|previous|prev)\b",
-        lower,
-    ) and re.search(r"\b(m[uú]sica|canci[oó]n|tema|spotify|media|track|pista)\b", lower):
-        if re.search(r"\b(siguiente|next)\b", lower):
-            return run("media", action="next")
-        if re.search(r"\b(anterior|previous|prev)\b", lower):
-            return run("media", action="previous")
-        if re.search(r"\b(paus[aá]|pause)\b", lower):
-            return run("media", action="pause")
-        return run("media", action="play")
+    media_key = _media_key(lower)
+    if media_key:
+        return run("media", action=media_key)
 
     if re.search(
         r"\b(captura(?:\s+de\s+pantalla)?|screenshot|sac[aá](?:me)?\s+(?:una\s+)?(?:foto|captura)|"
-        r"foto\s+de\s+pantalla)\b",
+        r"foto\s+de\s+pantalla|imprimir\s+pantalla)\b",
         lower,
     ):
         return run("screenshot")
@@ -121,28 +220,55 @@ def try_local_command(
     folder = re.search(
         r"(?:abr[ií]|abrime|abrir|abre|open|mostr[aá]|and[aá]\s+a)\s+"
         r"(?:la\s+|el\s+)?(?:carpeta\s+(?:de\s+)?)?(escritorio|desktop|descargas|downloads|"
-        r"documentos|documents|workspace)\b",
+        r"documentos|documents|workspace|mis\s+documentos)\b",
         lower,
     )
     if folder:
-        return run("open_folder", name=folder.group(1))
+        if android:
+            return "Eso es de la PC. Pedilo desde el HUD del escritorio."
+        name = folder.group(1).replace("mis ", "")
+        return run("open_folder", name=name)
 
-    if re.search(r"\b(portapapeles|clipboard)\b", lower) and re.search(
-        r"\b(le[eé]|mostr|qu[eé] hay|copi)\b", lower
+    if re.search(
+        r"\b(qu[eé]\s+hay\s+en\s+(?:el\s+)?workspace|list[aá]\s+(?:los\s+)?archivos|"
+        r"archivos\s+del\s+workspace|mostr[aá]\s+(?:el\s+)?workspace)\b",
+        lower,
     ):
-        if re.search(r"\b(copi[aá]|pon[eé]|peg)\b", lower):
-            clipped = re.sub(
-                r"^.*(?:al\s+)?(?:portapapeles|clipboard)\s*[:\-]?\s*",
-                "",
-                raw,
-                flags=re.I,
-            ).strip()
-            if clipped:
-                return run("set_clipboard", text=clipped)
+        return run("list_files", relative="")
+
+    clip_set = re.match(
+        r"^(?:copi[aá]|copiar|al\s+portapapeles|clipboard)\s*[:\-]?\s+(.+)$",
+        raw,
+        re.I | re.S,
+    )
+    if clip_set and not re.search(r"\b(le[eé]|mostr|qu[eé] hay)\b", lower):
+        return run("set_clipboard", text=clip_set.group(1).strip())
+
+    if re.search(
+        r"\b(portapapeles|clipboard|lo\s+que\s+copi[eé]|qu[eé]\s+copi[eé])\b",
+        lower,
+    ) and (
+        re.search(r"\b(le[eé]|mostr|qu[eé] hay|dec[ií]me|peg)\b", lower)
+        or re.fullmatch(r"(portapapeles|clipboard|qu[eé]\s+copi[eé]|lo\s+que\s+copi[eé])", lower)
+    ):
         return run("get_clipboard")
 
-    if re.search(r"\b(cancel[aá]|abort)\b", lower) and re.search(r"\b(apagad|reinici|shutdown)\b", lower):
+    if re.search(
+        r"\b(cancel[aá]|abort|abort[aá])\b.{0,20}\b(apagad|reinici|shutdown)\b|"
+        r"\b(cancel[aá]\s+el\s+apagado|no\s+apagues)\b",
+        lower,
+    ):
         return run("power_control", action="abort")
+
+    if re.search(
+        r"\b(bloque[aá]|bloquear|lock)\b.{0,20}\b(pc|computadora|pantalla|sesi[oó]n|windows)\b|"
+        r"\b(bloque[aá]\s+la\s+pantalla|lock\s+screen|win\s*\+\s*l)\b",
+        lower,
+    ):
+        if android:
+            return run("phone_hands", action="lock")
+        return run("power_control", action="lock")
+
     if re.search(r"\b(apag[aá]|prender|encend[eé]|luces?|foco|interruptor|velador)\b", lower) and re.search(
         r"\b(luz|luces|foco|living|pieza|cuarto|lampara|lámpara|lamparita|velador|enchufe|bombilla)\b",
         lower,
@@ -159,11 +285,50 @@ def try_local_command(
         r"\b(apaga(?:r)?\s+la\s+(?:pc|computadora|equipo))\b",
         lower,
     ):
+        if android:
+            return "Apagar la PC solo desde el HUD del escritorio (dueño)."
         return run("power_control", action="shutdown")
     if re.search(r"\b(reinici[aá]|reboot|restart)\b", lower) and re.search(
         r"\b(pc|computadora|equipo|sistema|windows)\b", lower
     ):
+        if android:
+            return "Reiniciar la PC solo desde el HUD del escritorio (dueño)."
         return run("power_control", action="restart")
+
+    wa = _whatsapp_draft(raw, lower)
+    if wa is not None:
+        if android:
+            return run("phone_hands", action="whatsapp", target=wa[0], text=wa[1])
+        return run("compose_whatsapp", phone=wa[0], text=wa[1])
+
+    yt = re.match(
+        r"^(?:busc[aá]|busca[r]?|pon[eé]|poneme|reproduc[ií])\s+(?:en\s+)?youtube\s+(.+)$",
+        raw,
+        re.I,
+    )
+    if yt:
+        q = yt.group(1).strip()
+        if android:
+            return run("phone_hands", action="youtube", target=q)
+        return run("play_music", query=q, platform="youtube")
+
+    translate = re.match(
+        r"^(?:traduc[ií]|traducir|translate)\s+(?:al?\s+\w+\s+)?(.+)$",
+        raw,
+        re.I,
+    )
+    if translate:
+        q = translate.group(1).strip()
+        if android:
+            return run("phone_hands", action="translate", text=q)
+        return run(
+            "open_browser",
+            url=f"https://translate.google.com/?sl=auto&tl=es&text={_url_quote(q)}&op=translate",
+        )
+
+    define = re.match(r"^(?:defin[ií]|definici[oó]n\s+de|significado\s+de)\s+(.+)$", raw, re.I)
+    if define:
+        return run("wikipedia", topic=define.group(1).strip())
 
     if android:
         phone = _android_hands(lower)
@@ -271,12 +436,16 @@ def try_local_command(
         return run("wikipedia", topic=wiki.group(1).strip())
 
     maps = re.match(
-        r"^(?:c[oó]mo\s+llego(?:\s+a)?|mapas?|ruta(?:\s+a)?)\s+(.+)$",
+        r"^(?:c[oó]mo\s+llego(?:\s+a)?|mapas?|ruta(?:\s+a)?|llevame\s+a|ll[eé]vame\s+a|"
+        r"direcciones?\s+(?:a|para))\s+(.+)$",
         raw,
         re.I,
     )
     if maps:
         return run("open_maps", destination=maps.group(1).strip(), origin="")
+
+    if re.fullmatch(r"https?://\S+", raw.strip(), re.I):
+        return run("open_browser", url=raw.strip())
 
     opened = re.search(
         r"(?:abr[ií]|abrime|abrir|abre|open|lanz[aá]|ejecut[aá]|and[aá]\s+a|"
@@ -289,19 +458,17 @@ def try_local_command(
     if opened:
         target = opened.group(1).strip().strip(" .!?")
         target = re.sub(r"\s+(por favor|please)$", "", target, flags=re.I).strip()
-        if re.match(r"https?://", target, re.I):
-            return run("open_browser", url=target)
-        from jarvis.bank_apps import is_banking
+        hit = _open_target(target, run, android=android)
+        if hit is not None:
+            return hit
 
-        aliases = {"code": "vscode", "vs": "vscode", "navegador": "chrome"}
-        key = aliases.get(target.split()[0].lower().rstrip("."), target.lower())
-        if is_banking(target) or is_banking(key):
-            return "No abro apps bancarias."
-        if android:
-            return run("phone_hands", action="open_app", target=target)
-        return run("open_app", name=key)
+    bare = _bare_app(lower)
+    if bare is not None:
+        hit = _open_target(bare, run, android=android)
+        if hit is not None:
+            return hit
 
-    if re.search(r"\b(d[oó]lar(?:es)?|blue|cripto|bitcoin|btc)\b", lower):
+    if re.search(r"\b(d[oó]lar(?:es)?|blue|cripto|bitcoin|btc|euro|eur)\b", lower):
         return run("web_search", query=raw, max_results=5)
 
     search = re.match(
@@ -316,7 +483,7 @@ def try_local_command(
         return run("web_search", query=query, max_results=5)
 
     if len(raw) >= 12 and re.search(
-        r"\b(noticia|precio|quien gan[oó]|resultado|cuando sale|cuándo)\b",
+        r"\b(noticia|precio|quien gan[oó]|resultado|cuando sale|cuándo|c[oó]mo\s+se\s+hace)\b",
         lower,
     ):
         return run("web_search", query=raw, max_results=5)
@@ -346,18 +513,186 @@ def local_reply(
 def _help(settings: Settings) -> str:
     name = settings.assistant_name
     return (
-        f"{name} en modo local, útil sin pagar nada:\n"
-        "- Clima: «clima» o «clima en Córdoba»\n"
-        "- Hora: «qué hora es»\n"
+        f"{name} — comandos locales (sin esperar al LLM):\n"
+        "- Hora / clima: «qué hora es», «clima en Córdoba»\n"
         "- Cuentas: «cuánto es 250*1.21»\n"
-        "- Nota: «anotá llamar al médico» / diario: «tomá nota: backtesting +3%»\n"
-        "- Volumen: «volumen al 30»\n"
-        "- Timer: «timer 10 minutos» / «pomodoro»\n"
-        "- Buscar: «busca dólar blue» / «qué es la inflación»\n"
+        "- Notas / diario: «anotá comprar leche», «tomá nota: …», «diario»\n"
+        "- Memoria: «acordate que mi team es River», «qué sabés»\n"
+        "- Timers: «timer 10 minutos», «avisame en 5 minutos», «pomodoro»\n"
+        "- Buscar: «busca dólar blue», «google receta de milanesa», «qué es X»\n"
+        "- Traducir / definir: «traducí hello world», «definí inflación»\n"
         "- Ruta: «cómo llego a Palermo»\n"
-        "- Apps: «abrí Spotify» / cualquier app instalada (no bancarias)\n"
-        "Charla completa: key Groq gratis en Perfil."
+        "- Apps: «abrí Spotify», «chrome», «calculadora», «youtube», «gmail»\n"
+        "- Carpetas: «abrí descargas / escritorio / documentos»\n"
+        "- Audio: «volumen al 30», «subí el volumen», «silenciá», «siguiente», «pausá»\n"
+        "- Música: «poneme Cerati», «buscá en youtube Bohemian Rhapsody»\n"
+        "- Pantalla: «sacá una captura», «bloqueá la pc»\n"
+        "- Portapapeles: «copiá hola», «qué hay en el portapapeles»\n"
+        "- Deshacer: «deshacer» (volumen/portapapeles, ~30s)\n"
+        "- WhatsApp borrador: «whatsapp a 54911…: llegué»\n"
+        "- PC: «estado de la pc», «apagá la pc», «cancelá el apagado»\n"
+        "Charla completa: key Groq en Perfil."
     )
+
+
+def _url_quote(text: str) -> str:
+    from urllib.parse import quote
+
+    return quote(text.strip()[:500])
+
+
+def _media_key(lower: str) -> str | None:
+    """Map natural language to Windows media VK names used by actions.media."""
+    mediaish = bool(
+        re.search(
+            r"\b(m[uú]sica|canci[oó]n|tema|spotify|media|track|pista|video|"
+            r"reproduc|paus|play|siguiente|anterior|next|prev|stop|deten)\b",
+            lower,
+        )
+    )
+    short = lower.strip() in {
+        "play",
+        "pause",
+        "pausá",
+        "pausa",
+        "siguiente",
+        "anterior",
+        "stop",
+        "detener",
+        "next",
+        "prev",
+    }
+    if not mediaish and not short:
+        return None
+    if re.search(r"\b(siguiente|next|pr[oó]xima)\b", lower):
+        return "next"
+    if re.search(r"\b(anterior|previous|prev|atr[aá]s)\b", lower):
+        return "prev"
+    if re.search(r"\b(stop|deten[eé]r?|parar)\b", lower):
+        return "stop"
+    if re.search(r"\b(paus[aá]|pause|play|reproduc[ií]|continuar|segu[ií])\b", lower):
+        return "play_pause"
+    return None
+
+
+def _whatsapp_draft(raw: str, lower: str) -> tuple[str, str] | None:
+    match = re.search(
+        r"(?:whats?app|wpp|wasap)\s+(?:a|al|para)?\s*(\+?\d[\d\s\-]{7,18})\s*[:\-]\s*(.+)$",
+        raw,
+        re.I | re.S,
+    )
+    if not match:
+        match = re.search(
+            r"(?:mand[aá](?:le)?|envi[aá](?:le)?)\s+(?:un\s+)?(?:whats?app|wpp|mensaje)\s+"
+            r"(?:a|al|para)\s+(\+?\d[\d\s\-]{7,18})\s+(?:que|diciendo|con|:)\s*(.+)$",
+            raw,
+            re.I | re.S,
+        )
+    if not match:
+        return None
+    phone = re.sub(r"\D", "", match.group(1))
+    text = match.group(2).strip()
+    if len(phone) < 8 or not text:
+        return None
+    return phone, text
+
+
+_APP_ALIASES = {
+    "code": "vscode",
+    "vs": "vscode",
+    "navegador": "chrome",
+    "internet": "chrome",
+    "google chrome": "chrome",
+    "bloc": "notepad",
+    "bloc de notas": "notepad",
+    "notas de windows": "notepad",
+    "calc": "calculadora",
+    "explorador": "explorer",
+    "archivos": "explorer",
+    "administrador": "taskmgr",
+    "task manager": "taskmgr",
+    "config": "configuracion",
+    "ajustes": "configuracion",
+    "corte": "recortes",
+    "recortadora": "recortes",
+}
+
+_WEB_TARGETS = {
+    "youtube": "https://www.youtube.com",
+    "yt": "https://www.youtube.com",
+    "gmail": "https://mail.google.com",
+    "correo": "https://mail.google.com",
+    "mail": "https://mail.google.com",
+    "maps": "https://maps.google.com",
+    "mapas": "https://maps.google.com",
+    "drive": "https://drive.google.com",
+    "docs": "https://docs.google.com",
+    "netflix": "https://www.netflix.com",
+    "twitch": "https://www.twitch.tv",
+    "github": "https://github.com",
+    "chatgpt": "https://chatgpt.com",
+}
+
+_BARE_APPS = {
+    "spotify",
+    "chrome",
+    "edge",
+    "firefox",
+    "notepad",
+    "calculadora",
+    "calculator",
+    "paint",
+    "discord",
+    "telegram",
+    "whatsapp",
+    "steam",
+    "cursor",
+    "vscode",
+    "excel",
+    "word",
+    "explorer",
+    "youtube",
+    "gmail",
+    "maps",
+    "netflix",
+    "twitch",
+    "github",
+    "taskmgr",
+    "terminal",
+    "powershell",
+    "wifi",
+    "bluetooth",
+    "configuracion",
+    "configuración",
+}
+
+
+def _bare_app(lower: str) -> str | None:
+    key = lower.strip().rstrip(".!?")
+    if key in _BARE_APPS or key in _APP_ALIASES or key in _WEB_TARGETS:
+        return key
+    return None
+
+
+def _open_target(target: str, run: Callable[..., str], *, android: bool) -> str | None:
+    from jarvis.bank_apps import is_banking
+
+    if re.match(r"https?://", target, re.I):
+        return run("open_browser", url=target)
+    lowered = target.lower().strip()
+    if lowered in _WEB_TARGETS:
+        if android:
+            return run("phone_hands", action="browser", target=_WEB_TARGETS[lowered])
+        return run("open_browser", url=_WEB_TARGETS[lowered])
+    if is_banking(target) or is_banking(lowered):
+        return "No abro apps bancarias."
+    key = _APP_ALIASES.get(lowered)
+    if key is None:
+        first = lowered.split()[0].rstrip(".")
+        key = _APP_ALIASES.get(first, lowered)
+    if android:
+        return run("phone_hands", action="open_app", target=target)
+    return run("open_app", name=key)
 
 
 def _city(text: str, memory: Memory) -> str:
@@ -390,14 +725,14 @@ def _timer(text: str) -> tuple[float | None, str]:
     if re.fullmatch(r"pomodoro|foco|timer\s*25", lower):
         return 25.0, "Pomodoro"
     match = re.search(
-        r"(?:timer|temporizador|avis[aá]me)\s+(?:en\s+)?(\d+(?:[.,]\d+)?)\s*"
-        r"(min|mins|minuto|minutos|hora|horas)\b(?:\s+(?:para|que|:)\s*(.+))?",
+        r"(?:timer|temporizador|avis[aá]me|record[aá]me|despert[aá]me)\s+(?:en\s+)?(\d+(?:[.,]\d+)?)\s*"
+        r"(min|mins|minuto|minutos|hora|horas|seg|segs|segundo|segundos)\b(?:\s+(?:para|que|:|de)\s*(.+))?",
         lower,
     )
     if not match:
         match = re.match(
-            r"en\s+(\d+(?:[.,]\d+)?)\s*(min|mins|minuto|minutos|hora|horas)\b"
-            r"(?:\s+(?:para|que|:)\s*(.+))?",
+            r"en\s+(\d+(?:[.,]\d+)?)\s*(min|mins|minuto|minutos|hora|horas|seg|segs|segundo|segundos)\b"
+            r"(?:\s+(?:para|que|:|de)\s*(.+))?",
             lower,
         )
     if not match:
@@ -407,6 +742,8 @@ def _timer(text: str) -> tuple[float | None, str]:
     label = (match.group(3) if match.lastindex and match.lastindex >= 3 else "") or "Timer"
     if unit.startswith("hora"):
         amount *= 60
+    elif unit.startswith("seg"):
+        amount /= 60.0
     return amount, label.strip() or "Timer"
 
 

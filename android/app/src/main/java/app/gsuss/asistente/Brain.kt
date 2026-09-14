@@ -250,6 +250,10 @@ class Brain(private val prefs: Prefs) {
         return NotesBundle.fromExport(get("/api/notes"))
     }
 
+    fun getAlerts(after: Int): JSONObject {
+        return get("/api/alerts?after=$after")
+    }
+
     fun syncNotes(bundle: NotesBundle): NotesBundle {
         val arr = org.json.JSONArray()
         bundle.items.forEach { arr.put(it.toJson()) }

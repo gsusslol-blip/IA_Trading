@@ -67,6 +67,8 @@ class Brain:
         self.actions = Actions(settings, self.bus, workspace, is_owner=is_owner)
         self._endpoint: LLMEndpoint | None = None
         self._history: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._chat_path = (self.memory.path.parent / "chat_history.json") if hasattr(self.memory, "path") else None
+        self._load_persisted_history()
         raw_execute = make_executor(settings, self.memory, self.actions)
 
         def execute(name: str, arguments_json: str) -> str:
@@ -150,9 +152,63 @@ class Brain:
             surface=getattr(self.actions, "client_surface", "hud"),
         )
 
+    def _load_persisted_history(self) -> None:
+        path = self._chat_path
+        if path is None or not path.is_file():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return
+        if not isinstance(raw, dict):
+            return
+        for session_id, turns in raw.items():
+            if not isinstance(turns, list):
+                continue
+            clean: list[dict[str, Any]] = []
+            for item in turns[-MAX_HISTORY:]:
+                if not isinstance(item, dict):
+                    continue
+                role = item.get("role")
+                content = item.get("content")
+                if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+                    clean.append({"role": role, "content": content.strip()[:4000]})
+            if clean:
+                self._history[str(session_id)] = clean
+
+    def _persist_history(self, session_id: str) -> None:
+        path = self._chat_path
+        if path is None:
+            return
+        try:
+            existing: dict[str, Any] = {}
+            if path.is_file():
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    existing = loaded
+            turns = [
+                {"role": item["role"], "content": item["content"]}
+                for item in self._history[session_id]
+                if item.get("role") in {"user", "assistant"} and isinstance(item.get("content"), str)
+            ][-MAX_HISTORY:]
+            existing[session_id] = turns
+            path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, TypeError, ValueError):
+            pass
+
+    def continue_hint(self, session_id: str) -> str:
+        history = self._history.get(session_id) or []
+        for item in reversed(history):
+            if item.get("role") == "user" and isinstance(item.get("content"), str):
+                text = item["content"].strip()
+                if text:
+                    return text[:120]
+        return ""
+
     def _store(self, session_id: str, answer: str) -> str:
         clean = redact_secrets(answer, extra=secret_values(self.settings))
         self._history[session_id].append({"role": "assistant", "content": clean})
+        self._persist_history(session_id)
         return clean
 
     def _last_assistant(self, session_id: str) -> str:
@@ -203,6 +259,7 @@ class Brain:
 
         history = self._history[session_id]
         history.append({"role": "user", "content": text})
+        self._persist_history(session_id)
 
         from jarvis.local import try_local_command
 
