@@ -205,6 +205,24 @@ def try_local_command(
 
     if re.search(r"\b(silenci(?:ar|[oaá])|mute(?:ar)?|sin\s+sonido)\b", lower):
         return run("media", action="mute")
+    if re.search(
+        r"\b(desilenci|unmute|con\s+sonido|sac[aá]\s+el\s+silencio|quit[aá]\s+el\s+silencio)\b",
+        lower,
+    ):
+        return run("media", action="mute")
+
+    if re.fullmatch(r"(escritorio|desktop)", lower):
+        if android:
+            return "Eso es de la PC. Pedilo desde el HUD del escritorio."
+        return run("open_folder", name="escritorio")
+    if re.fullmatch(r"(descargas|downloads)", lower):
+        if android:
+            return "Eso es de la PC. Pedilo desde el HUD del escritorio."
+        return run("open_folder", name="descargas")
+    if re.fullmatch(r"(documentos|documents)", lower):
+        if android:
+            return "Eso es de la PC. Pedilo desde el HUD del escritorio."
+        return run("open_folder", name="documentos")
 
     media_key = _media_key(lower)
     if media_key:
@@ -416,6 +434,12 @@ def try_local_command(
     if re.fullmatch(r"(notas|mis notas|lista(r)? notas)", lower):
         return run("note", text="")
 
+    if re.fullmatch(r"(clima|tiempo|temperatura)", lower):
+        return run("weather", city=city)
+
+    if re.fullmatch(r"(estado|status|sistema)", lower):
+        return run("system_status")
+
     note = re.match(r"^(?:anot[aá]|nota[:\s]+|record[aá]\s+esto[:\s]*)\s*(.+)$", raw, re.I | re.S)
     if note:
         return run("note", text=note.group(1).strip())
@@ -561,6 +585,10 @@ def _media_key(lower: str) -> str | None:
         "detener",
         "next",
         "prev",
+        "mute",
+        "silencio",
+        "silenciá",
+        "silencia",
     }
     if not mediaish and not short:
         return None
@@ -568,6 +596,8 @@ def _media_key(lower: str) -> str | None:
         return "next"
     if re.search(r"\b(anterior|previous|prev|atr[aá]s)\b", lower):
         return "prev"
+    if re.search(r"\b(silenci|mute)\b", lower):
+        return "mute"
     if re.search(r"\b(stop|deten[eé]r?|parar)\b", lower):
         return "stop"
     if re.search(r"\b(paus[aá]|pause|play|reproduc[ií]|continuar|segu[ií])\b", lower):

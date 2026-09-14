@@ -536,6 +536,7 @@
         <div class="metric-row"><span>Ollama LLM</span><strong class="text-green" id="metric-ollama">—</strong></div>
         <div class="metric-row"><span>Puerto HUD</span><strong id="metric-port">—</strong></div>
         <div class="metric-row"><span>Voz</span><strong id="metric-tts">—</strong></div>
+        <div class="metric-row"><span>Latencia</span><strong id="metric-lat">—</strong></div>
         <div class="metric-row"><span>Versión</span><strong id="metric-version">—</strong></div>
       </div>
       <div class="widget-box">
@@ -884,6 +885,7 @@
       el.className = "msg jarvis";
       log.appendChild(el);
       log.scrollTop = log.scrollHeight;
+      const t0 = performance.now();
       try {
         const res = await fetch("/api/chat/stream", {
           method: "POST",
@@ -905,6 +907,9 @@
         let buf = "";
         let audioUrl = "";
         let finalReply = "";
+        let earlyPlaying = false;
+        let skipFull = false;
+        let latencyMs = 0;
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -928,6 +933,11 @@
               showCaption(el.textContent, "jarvis");
               log.scrollTop = log.scrollHeight;
             }
+            if (eventName === "early_audio" && data.audio_url && !earlyPlaying) {
+              earlyPlaying = true;
+              setLive("hablando…", true);
+              playAudioUrl(data.audio_url, data.text || "").catch(() => {});
+            }
             if (eventName === "error") {
               el.textContent = data.detail || "Error en el stream.";
               showCaption(el.textContent, "jarvis");
@@ -936,12 +946,24 @@
               finalReply = data.reply || el.textContent;
               el.textContent = finalReply;
               audioUrl = data.audio_url || "";
+              skipFull = !!data.skip_full_tts;
+              latencyMs = Number(data.latency_ms) || Math.round(performance.now() - t0);
               showCaption(finalReply, "jarvis");
             }
           }
         }
-        setLive("hablando…", true);
-        await playAudioUrl(audioUrl, finalReply || el.textContent);
+        const latEl = document.getElementById("metric-lat");
+        if (latEl && latencyMs) latEl.textContent = latencyMs + " ms";
+        if (audioUrl && (!earlyPlaying || !skipFull)) {
+          if (earlyPlaying && !skipFull) stopVoice();
+          setLive("hablando…", true);
+          await playAudioUrl(audioUrl, finalReply || el.textContent);
+        } else if (!audioUrl && !earlyPlaying) {
+          setLive("hablando…", true);
+          await playAudioUrl("", finalReply || el.textContent);
+        } else {
+          setLive(handsFree ? "escuchando — decí Ilaria" : "En línea", handsFree);
+        }
       } finally {
         busy = false;
         setLive(handsFree ? "escuchando — decí Ilaria" : "En línea", handsFree);

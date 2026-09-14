@@ -95,21 +95,26 @@ def resolve_llm(settings: Settings, model: str | None = None) -> LLMEndpoint:
     provider = settings.llm_provider
     if provider == "auto":
         preferred = (settings.llm_model or "").strip()
-        # Prefer cloud when LLM_MODEL is a cloud id: local 2B skips tools and "talks" instead of acting.
-        if preferred and looks_like_cloud_model(preferred) and settings.groq_api_key:
+        ollama_up = _ollama_reachable(settings.ollama_base_url)
+        # Precision: prefer Groq/cloud whenever a key exists, unless the user pinned a
+        # local Ollama tag in LLM_MODEL (e.g. gemma2:2b / llama3.1:8b).
+        pinned_local = bool(preferred) and not looks_like_cloud_model(preferred)
+        if pinned_local and ollama_up:
+            provider = "ollama"
+        elif preferred and looks_like_cloud_model(preferred) and settings.groq_api_key:
             provider = "groq"
         elif preferred and looks_like_cloud_model(preferred) and settings.openai_api_key:
             provider = "openai"
         elif preferred and looks_like_cloud_model(preferred) and settings.gemini_api_key:
             provider = "gemini"
-        elif _ollama_reachable(settings.ollama_base_url):
-            provider = "ollama"
         elif settings.groq_api_key:
             provider = "groq"
         elif settings.openai_api_key:
             provider = "openai"
         elif settings.gemini_api_key:
             provider = "gemini"
+        elif ollama_up:
+            provider = "ollama"
         else:
             raise RuntimeError(
                 "No hay cerebro. Levantá Ollama (gemma2:2b) o pegá GROQ_API_KEY en .env."

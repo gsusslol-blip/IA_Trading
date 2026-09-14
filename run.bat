@@ -24,7 +24,7 @@ set LLM_PROVIDER=auto
 set OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
 set OLLAMA_MODEL=gemma2:2b
 set STT_PROVIDER=faster-whisper
-set FASTER_WHISPER_MODEL=base
+set FASTER_WHISPER_MODEL=small
 set WHISPER_DEVICE=cpu
 
 if not exist .venv\Scripts\python.exe py -3 -m venv .venv

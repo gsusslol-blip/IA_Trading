@@ -2,188 +2,645 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Ilaria</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login Ilaria</title>
   <link rel="icon" href="/favicon.svg" />
   <style>
-    :root {
-      --bg: #0b0b0b;
-      --pink: #ffb6c1;
-      --pink-dim: rgba(255, 182, 193, 0.22);
-      --text: #f1f5f9;
-      --mute: #9aa3b5;
-      --red: #ff5a6a;
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
     }
-    * { box-sizing: border-box; }
-    html, body {
-      margin: 0; min-height: 100%;
-      background: radial-gradient(circle at 50% 0%, rgba(255, 140, 170, 0.18), transparent 48%), #0b0b0b;
-      color: var(--text);
-      font-family: "Segoe UI", sans-serif;
+
+    body {
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(255, 71, 126, 0.18), transparent 55%),
+        radial-gradient(circle at 85% 85%, rgba(120, 40, 80, 0.16), transparent 42%),
+        #0f0f12;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      color: #fff;
     }
-    .wrap { max-width: 480px; margin: 0 auto; padding: 40px 22px 56px; }
-    .brand {
-      letter-spacing: 0.35em; color: var(--pink); font-size: 14px; font-weight: 600;
+
+    .login-container {
+      background: rgba(255, 255, 255, 0.04);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 40px;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+      text-align: center;
     }
-    h1 { font-weight: 500; font-size: 26px; margin: 22px 0 8px; }
-    .lead { color: var(--mute); margin: 0 0 22px; line-height: 1.45; font-size: 14px; }
-    .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
-    .tabs button {
-      flex: 1; background: transparent; color: var(--mute); border: 1px solid var(--pink-dim);
-      padding: 10px 12px; cursor: pointer; letter-spacing: 0.1em; text-transform: uppercase; font-size: 11px;
+
+    .login-header h1 {
+      color: #ff6b8b;
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      margin-bottom: 28px;
+      order: 2;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
     }
-    .tabs button.on { color: #1a0f14; background: var(--pink); border-color: var(--pink); font-weight: 700; }
-    label { display: block; font-size: 12px; color: var(--mute); margin: 12px 0 6px; }
-    input[type=text], input[type=password] {
-      width: 100%; background: #121018; border: 1px solid var(--pink-dim); color: var(--text);
-      padding: 11px 12px; font-size: 15px; outline: none;
+
+    .login-header h1 .heart {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      letter-spacing: 0;
+      color: #ff477e;
+      filter: drop-shadow(0 0 8px rgba(255, 71, 126, 0.55));
+      animation: heartBeat 2.4s ease-in-out infinite;
     }
-    input:focus { border-color: var(--pink); }
-    .check {
-      display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--mute); font-size: 13px;
+
+    @keyframes heartBeat {
+      0%, 100% { transform: scale(1); }
+      12% { transform: scale(1.14); }
+      24% { transform: scale(1); }
+      36% { transform: scale(1.08); }
+      48% { transform: scale(1); }
     }
-    .check input { accent-color: var(--pink); }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .packs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+
+    .login-header h2 {
+      color: rgba(255, 255, 255, 0.95);
+      font-size: 18px;
+      font-weight: 400;
+      margin-bottom: 10px;
+      letter-spacing: -0.01em;
+      line-height: 1.35;
+      order: 1;
+    }
+
+    .login-header {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .login-header p {
+      display: none;
+    }
+
+    .notice {
+      display: none;
+      margin: 0 0 18px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 107, 139, 0.28);
+      background: rgba(255, 71, 126, 0.08);
+      color: rgba(255, 255, 255, 0.55);
+      font-size: 12px;
+      line-height: 1.4;
+      text-align: center;
+    }
+    .notice.show { display: block; }
+
+    .login-form { text-align: left; }
+
+    .input-group { margin-bottom: 20px; }
+
+    .input-group label {
+      display: block;
+      color: rgba(255, 255, 255, 0.7);
+      font-size: 13px;
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+
+    .input-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .input-wrapper .icon {
+      position: absolute;
+      left: 14px;
+      width: 16px;
+      height: 16px;
+      color: rgba(255, 255, 255, 0.3);
+      pointer-events: none;
+    }
+
+    .input-wrapper input,
+    .login-form input[type="text"],
+    .login-form input[type="password"] {
+      width: 100%;
+      padding: 12px 14px 12px 42px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      color: #ffffff;
+      font-size: 15px;
+      outline: none;
+      transition: all 0.3s ease;
+      font-family: inherit;
+    }
+
+    .login-form .plain input {
+      padding-left: 14px;
+    }
+
+    #recover input {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      color: #ffffff;
+      padding: 12px 14px;
+      width: 100%;
+      font-size: 15px;
+      outline: none;
+      font-family: inherit;
+    }
+
+    #recover input:focus {
+      border-color: #ff6b8b;
+      background: rgba(255, 255, 255, 0.08);
+      box-shadow: 0 0 10px rgba(255, 107, 139, 0.2);
+    }
+
+    .input-wrapper input::placeholder,
+    .login-form input::placeholder {
+      color: rgba(255, 255, 255, 0.28);
+    }
+
+    .input-wrapper input:focus,
+    .login-form input:focus {
+      border-color: #ff6b8b;
+      background: rgba(255, 255, 255, 0.08);
+      box-shadow: 0 0 10px rgba(255, 107, 139, 0.2);
+    }
+
+    .form-actions {
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .link-quiet {
+      background: none;
+      border: 0;
+      color: rgba(255, 255, 255, 0.45);
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      padding: 0;
+      text-decoration: none;
+    }
+
+    .link-quiet:hover {
+      color: #ff6b8b;
+      text-decoration: underline;
+    }
+
+    .ok-msg {
+      color: rgba(160, 220, 170, 0.95);
+      min-height: 1.2em;
+      margin-top: 12px;
+      font-size: 13px;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    .recover-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    .recover-tabs button {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      color: rgba(255, 255, 255, 0.6);
+      padding: 10px 8px;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .recover-tabs button.on {
+      border-color: #ff6b8b;
+      color: #fff;
+      background: rgba(255, 107, 139, 0.12);
+    }
+
+    .checkbox-container {
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      user-select: none;
+    }
+
+    .checkbox-container input {
+      accent-color: #ff6b8b;
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
+    .btn-primary {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #ff6b8b, #ff477e);
+      border: none;
+      border-radius: 8px;
+      color: #ffffff;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      box-shadow: 0 4px 15px rgba(255, 71, 126, 0.3);
+      font-family: inherit;
+      text-transform: uppercase;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(255, 71, 126, 0.5);
+    }
+
+    .btn-primary:active { transform: translateY(1px); }
+
+    .err {
+      color: #ff5a6a;
+      min-height: 1.2em;
+      margin-top: 12px;
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .login-footer {
+      margin-top: 25px;
+    }
+
+    .login-footer p {
+      color: rgba(255, 255, 255, 0.4);
+      font-size: 13px;
+    }
+
+    .login-footer a,
+    .login-footer button {
+      color: #ff6b8b;
+      text-decoration: none;
+      font-weight: 500;
+      transition: color 0.2s;
+      background: none;
+      border: 0;
+      font: inherit;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .login-footer a:hover,
+    .login-footer button:hover {
+      text-decoration: underline;
+      color: #ff477e;
+    }
+
+    .login-footer button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      text-decoration: none;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .packs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin: 10px 0 16px;
+    }
+
     .pack {
-      border: 1px solid var(--pink-dim); padding: 10px; cursor: pointer; min-height: 72px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      padding: 10px;
+      cursor: pointer;
+      min-height: 72px;
+      background: rgba(255, 255, 255, 0.05);
+      text-align: left;
+      transition: border-color 0.2s ease;
     }
-    .pack.on { border-color: var(--pink); }
-    .pack strong { display: block; color: var(--pink); margin-bottom: 4px; font-size: 13px; font-weight: 600; }
-    .pack span { font-size: 12px; color: var(--mute); line-height: 1.3; }
-    .go {
-      width: 100%; margin-top: 20px; background: var(--pink); color: #1a0f14; border: 0;
-      padding: 13px 18px; cursor: pointer; letter-spacing: 0.14em; text-transform: uppercase;
-      font-size: 12px; font-weight: 700;
+
+    .pack.on { border-color: #ff6b8b; }
+
+    .pack strong {
+      display: block;
+      color: #ff6b8b;
+      margin-bottom: 4px;
+      font-size: 13px;
+      font-weight: 600;
     }
-    .err { color: var(--red); min-height: 1.2em; margin-top: 12px; font-size: 14px; }
-    .hint { font-size: 12px; color: var(--mute); margin-top: 10px; }
-    a { color: var(--pink); }
+
+    .pack span {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.45);
+      line-height: 1.3;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.4);
+      margin: 0 0 16px;
+      text-align: left;
+    }
+
+    .hint a { color: #ff6b8b; }
+
     .hidden { display: none !important; }
+
+    .section-label {
+      display: block;
+      color: rgba(255, 255, 255, 0.7);
+      font-size: 13px;
+      margin-bottom: 8px;
+      font-weight: 500;
+      text-align: left;
+    }
+
     @media (max-width: 560px) {
+      .login-container { padding: 28px 22px; }
       .row, .packs { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="brand">ILARIA</div>
-    <h1>Hola</h1>
-    <p class="lead">Entrá con tu cuenta o creá una nueva en esta PC.</p>
-    <p class="hint" id="signupHint" style="margin-top:-12px;margin-bottom:12px;"></p>
-    <div class="hint" style="border:1px solid var(--pink-dim);padding:12px;margin-bottom:18px;line-height:1.45;">
-      <strong style="color:var(--pink);">Probalo en 30s</strong><br/>
-      «qué hora es» · «tomá nota: comprar leche» · «volumen al 30» · «abrí chrome» · «deshacer»
-    </div>
+  <div class="login-container">
+    <header class="login-header">
+      <h2 id="heading">Hola, mi nombre es</h2>
+      <h1 id="brand">Ilaria <svg class="heart" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 21s-6.7-4.35-9.33-8.1C.7 10.2 1.1 6.9 3.6 5.2c2.1-1.4 4.7-.9 6.2 1 1.5-1.9 4.1-2.4 6.2-1 2.5 1.7 2.9 5 1 7.7C18.7 16.65 12 21 12 21z"/></svg></h1>
+      <p id="lead" hidden></p>
+    </header>
 
-    <div class="tabs" id="tabs">
-      <button class="on" id="tabLog" type="button">Entrar</button>
-      <button id="tabReg" type="button">Crear cuenta</button>
-    </div>
+    <p class="notice" id="signupHint" role="status"></p>
 
-    <form id="log">
-      <label>Usuario</label>
-      <input name="username" required autocomplete="username" />
-      <label>Contraseña</label>
-      <input name="password" type="password" required autocomplete="current-password" />
-      <label class="check"><input type="checkbox" id="remember" checked /> Recordarme en esta PC</label>
-      <button class="go" type="submit">Entrar</button>
+    <form class="login-form" id="log">
+      <div class="input-group">
+        <label for="log-user">Usuario</label>
+        <div class="input-wrapper">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <circle cx="12" cy="8" r="3.5" />
+            <path d="M5 19.5c1.8-3.2 4.2-4.8 7-4.8s5.2 1.6 7 4.8" stroke-linecap="round" />
+          </svg>
+          <input type="text" id="log-user" name="username" placeholder="Ingresá tu usuario" required autocomplete="username" />
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label for="log-pass">Contraseña</label>
+        <div class="input-wrapper">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <rect x="5" y="11" width="14" height="10" rx="2" />
+            <path d="M8 11V8a4 4 0 0 1 8 0v3" stroke-linecap="round" />
+          </svg>
+          <input type="password" id="log-pass" name="password" placeholder="Ingresá tu contraseña" required autocomplete="current-password" />
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <label class="checkbox-container">
+          <input type="checkbox" id="remember" checked />
+          Recordarme en esta PC
+        </label>
+        <button type="button" class="link-quiet" id="toRecover">¿Olvidaste usuario o contraseña?</button>
+      </div>
+
+      <button type="submit" class="btn-primary">Entrar</button>
       <div class="err" id="logErr"></div>
     </form>
 
-    <form id="reg" class="hidden">
-      <div class="row">
-        <div>
-          <label>Tu nombre</label>
-          <input name="display_name" required maxlength="80" placeholder="Cómo te llamás" />
+    <form class="login-form hidden" id="recover">
+      <div class="recover-tabs" role="tablist">
+        <button type="button" class="on" id="tabUser" data-tab="user">Recuperar usuario</button>
+        <button type="button" id="tabPass" data-tab="pass">Nueva contraseña</button>
+      </div>
+
+      <div id="recUserPane">
+        <div class="input-group plain">
+          <label for="rec-name">Tu nombre (el de la cuenta)</label>
+          <input id="rec-name" name="display_name" maxlength="80" placeholder="Cómo te llamabas al registrarte" />
         </div>
-        <div>
-          <label>Usuario</label>
-          <input name="username" required maxlength="24" placeholder="letras y números" autocomplete="username" />
+        <button type="button" class="btn-primary" id="btnFindUser">Buscar usuario</button>
+      </div>
+
+      <div id="recPassPane" class="hidden">
+        <div class="input-group plain">
+          <label for="rec-user">Usuario</label>
+          <input id="rec-user" maxlength="24" placeholder="tu usuario" autocomplete="username" />
+        </div>
+        <div class="input-group plain">
+          <label for="rec-disp">Nombre de la cuenta</label>
+          <input id="rec-disp" maxlength="80" placeholder="para generar o validar el código" />
+        </div>
+        <div class="input-group plain">
+          <label for="rec-code">Código de recuperación</label>
+          <input id="rec-code" maxlength="64" placeholder="está en data/recovery" autocomplete="off" />
+        </div>
+        <div class="input-group plain">
+          <label for="rec-new">Nueva contraseña</label>
+          <input id="rec-new" type="password" minlength="8" placeholder="mínimo 8 caracteres" autocomplete="new-password" />
+        </div>
+        <button type="button" class="btn-primary" id="btnResetPass" style="margin-bottom:10px;">Restablecer contraseña</button>
+        <button type="button" class="link-quiet" id="btnIssueCode" style="width:100%;text-align:center;">Generar código en esta PC</button>
+      </div>
+
+      <div class="err" id="recErr"></div>
+      <div class="ok-msg" id="recOk"></div>
+      <p class="hint" style="margin-top:16px;text-align:center;">
+        El código vive solo en esta PC, en la carpeta <code>data/recovery</code>.
+      </p>
+    </form>
+
+    <form class="login-form hidden" id="reg">
+      <div class="row">
+        <div class="input-group plain">
+          <label for="reg-name">Tu nombre</label>
+          <input id="reg-name" name="display_name" required maxlength="80" placeholder="Cómo te llamás" />
+        </div>
+        <div class="input-group plain">
+          <label for="reg-user">Usuario</label>
+          <input id="reg-user" name="username" required maxlength="24" placeholder="letras y números" autocomplete="username" />
         </div>
       </div>
       <div class="row">
-        <div>
-          <label>Contraseña</label>
-          <input name="password" type="password" required minlength="8" autocomplete="new-password" />
+        <div class="input-group plain">
+          <label for="reg-pass">Contraseña</label>
+          <input id="reg-pass" name="password" type="password" required minlength="8" autocomplete="new-password" />
         </div>
-        <div>
-          <label>Cómo te hablo</label>
-          <input name="address_as" placeholder="pá, tu nombre…" />
+        <div class="input-group plain">
+          <label for="reg-addr">Cómo te hablo</label>
+          <input id="reg-addr" name="address_as" placeholder="pá, tu nombre…" />
         </div>
       </div>
       <div class="row">
-        <div>
-          <label>Ciudad</label>
-          <input name="city" placeholder="Buenos Aires" />
+        <div class="input-group plain">
+          <label for="reg-city">Ciudad</label>
+          <input id="reg-city" name="city" placeholder="Buenos Aires" />
         </div>
-        <div>
-          <label>Key Groq (opcional)</label>
-          <input name="groq_key" placeholder="gsk_…" />
+        <div class="input-group plain">
+          <label for="reg-groq">Key Groq (opcional)</label>
+          <input id="reg-groq" name="groq_key" placeholder="gsk_…" />
         </div>
       </div>
-      <label>Intereses</label>
+      <label class="section-label">Intereses</label>
       <div class="packs" id="packs"></div>
       <p class="hint">Key gratis: <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">console.groq.com/keys</a></p>
-      <button class="go" type="submit">Crear cuenta</button>
+      <button type="submit" class="btn-primary">Crear cuenta</button>
       <div class="err" id="regErr"></div>
     </form>
+
+    <footer class="login-footer" id="footerLogin">
+      <p>¿No tenés cuenta? <button type="button" id="toReg">Registrate aquí</button></p>
+    </footer>
+    <footer class="login-footer hidden" id="footerReg">
+      <p>¿Ya tenés cuenta? <button type="button" id="toLog">Entrar</button></p>
+    </footer>
+    <footer class="login-footer hidden" id="footerRecover">
+      <p>¿Ya la recordás? <button type="button" id="toLogFromRec">Volver a entrar</button></p>
+    </footer>
   </div>
+
   <script>
     const packsEl = document.getElementById("packs");
     const selected = new Set(["diario"]);
-    const tabReg = document.getElementById("tabReg");
-    const tabLog = document.getElementById("tabLog");
+    const toReg = document.getElementById("toReg");
+    const toLog = document.getElementById("toLog");
+    const toLogFromRec = document.getElementById("toLogFromRec");
+    const toRecover = document.getElementById("toRecover");
     const reg = document.getElementById("reg");
     const log = document.getElementById("log");
+    const recover = document.getElementById("recover");
+    const heading = document.getElementById("heading");
+    const brand = document.getElementById("brand");
+    const footerLogin = document.getElementById("footerLogin");
+    const footerReg = document.getElementById("footerReg");
+    const footerRecover = document.getElementById("footerRecover");
     const REMEMBER_KEY = "ilaria_user";
+    const signupHint = document.getElementById("signupHint");
+    const GREET = "Hola, mi nombre es";
 
-    // Already logged in (cookie) → HUD
+    function showNotice(text) {
+      if (!text) {
+        signupHint.textContent = "";
+        signupHint.classList.remove("show");
+        return;
+      }
+      signupHint.textContent = text;
+      signupHint.classList.add("show");
+    }
+
+    function hideAllForms() {
+      log.classList.add("hidden");
+      reg.classList.add("hidden");
+      recover.classList.add("hidden");
+      footerLogin.classList.add("hidden");
+      footerReg.classList.add("hidden");
+      footerRecover.classList.add("hidden");
+    }
+
+    function showLogin() {
+      hideAllForms();
+      heading.textContent = GREET;
+      brand.classList.remove("hidden");
+      log.classList.remove("hidden");
+      footerLogin.classList.remove("hidden");
+      document.getElementById("logErr").textContent = "";
+    }
+
+    function showRegister() {
+      if (!allowSignups) {
+        document.getElementById("regErr").textContent =
+          "El registro está cerrado. Solo el dueño puede habilitar cuentas nuevas.";
+        return;
+      }
+      hideAllForms();
+      heading.textContent = "Creá tu cuenta";
+      brand.classList.add("hidden");
+      reg.classList.remove("hidden");
+      footerReg.classList.remove("hidden");
+      document.getElementById("regErr").textContent = "";
+    }
+
+    function showRecover() {
+      hideAllForms();
+      heading.textContent = "Recuperar acceso";
+      brand.classList.add("hidden");
+      recover.classList.remove("hidden");
+      footerRecover.classList.remove("hidden");
+      document.getElementById("recErr").textContent = "";
+      document.getElementById("recOk").textContent = "";
+      showNotice("");
+    }
+
+    function setRecoverTab(which) {
+      const userPane = document.getElementById("recUserPane");
+      const passPane = document.getElementById("recPassPane");
+      const tabUser = document.getElementById("tabUser");
+      const tabPass = document.getElementById("tabPass");
+      const isUser = which === "user";
+      tabUser.classList.toggle("on", isUser);
+      tabPass.classList.toggle("on", !isUser);
+      userPane.classList.toggle("hidden", !isUser);
+      passPane.classList.toggle("hidden", isUser);
+      document.getElementById("recErr").textContent = "";
+      document.getElementById("recOk").textContent = "";
+    }
+
     fetch("/api/me", { credentials: "same-origin" })
       .then((r) => { if (r.ok) location.replace("/"); })
       .catch(() => {});
 
-    const signupHint = document.getElementById("signupHint");
     let allowSignups = true;
     fetch("/api/meta", { credentials: "same-origin" })
       .then((r) => r.json())
       .then((data) => {
         allowSignups = !!data.allow_signups;
         if (!allowSignups) {
-          tabReg.disabled = true;
-          tabReg.style.opacity = "0.45";
-          tabReg.style.cursor = "not-allowed";
-          signupHint.textContent = data.owner_hint
-            ? ("Registro cerrado. Pedile a @" + data.owner_hint + " que habilite cuentas nuevas en Admin.")
-            : "Registro cerrado en esta PC.";
+          toReg.disabled = true;
+          showNotice(
+            data.owner_hint
+              ? ("Registro cerrado. Pedile a @" + data.owner_hint + " que habilite cuentas nuevas en Admin.")
+              : "Registro cerrado en esta PC."
+          );
         } else if (!data.has_owner) {
-          signupHint.textContent = "Todavía no hay dueño: la primera cuenta que creés es el admin de esta PC.";
-          tabReg.click();
+          showNotice("Todavía no hay dueño: la primera cuenta que creés es el admin de esta PC.");
+          showRegister();
         } else {
-          signupHint.textContent = "¿Primera vez? Tocá «Crear cuenta». Si ya tenés usuario, «Entrar».";
+          showNotice("");
         }
       })
-      .catch(() => {
-        signupHint.textContent = "¿Primera vez? Tocá «Crear cuenta».";
-      });
+      .catch(() => showNotice(""));
 
-    tabLog.onclick = () => {
-      tabLog.classList.add("on");
-      tabReg.classList.remove("on");
-      log.classList.remove("hidden");
-      reg.classList.add("hidden");
-    };
-    tabReg.onclick = () => {
-      if (!allowSignups) {
-        document.getElementById("regErr").textContent =
-          "El registro está cerrado. Solo el dueño puede habilitar cuentas nuevas.";
-        return;
-      }
-      tabReg.classList.add("on");
-      tabLog.classList.remove("on");
-      reg.classList.remove("hidden");
-      log.classList.add("hidden");
-    };
+    toLog.onclick = showLogin;
+    toLogFromRec.onclick = showLogin;
+    toReg.onclick = showRegister;
+    toRecover.onclick = showRecover;
+    document.getElementById("tabUser").onclick = () => setRecoverTab("user");
+    document.getElementById("tabPass").onclick = () => setRecoverTab("pass");
 
     const saved = localStorage.getItem(REMEMBER_KEY);
     if (saved) log.querySelector("[name=username]").value = saved;
@@ -219,17 +676,67 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         errEl.textContent = (typeof data.detail === "string" ? data.detail : null) || "No se pudo.";
-        return;
+        return null;
       }
-      location.replace("/");
+      return data;
     }
+
+    async function postAndEnter(url, body, errEl) {
+      const data = await post(url, body, errEl);
+      if (data) location.replace("/");
+    }
+
+    document.getElementById("btnFindUser").onclick = async () => {
+      const errEl = document.getElementById("recErr");
+      const okEl = document.getElementById("recOk");
+      okEl.textContent = "";
+      const data = await post("/api/recover/username", {
+        display_name: document.getElementById("rec-name").value,
+      }, errEl);
+      if (!data) return;
+      const list = data.usernames || [];
+      okEl.textContent = list.length === 1
+        ? ("Tu usuario es: " + list[0])
+        : ("Usuarios encontrados: " + list.join(", "));
+      if (list[0]) {
+        document.getElementById("rec-user").value = list[0];
+        document.getElementById("log-user").value = list[0];
+      }
+    };
+
+    document.getElementById("btnIssueCode").onclick = async () => {
+      const errEl = document.getElementById("recErr");
+      const okEl = document.getElementById("recOk");
+      okEl.textContent = "";
+      const data = await post("/api/recover/issue", {
+        username: document.getElementById("rec-user").value,
+        display_name: document.getElementById("rec-disp").value,
+      }, errEl);
+      if (!data) return;
+      okEl.textContent = data.hint || "Código generado en data/recovery.";
+    };
+
+    document.getElementById("btnResetPass").onclick = async () => {
+      const errEl = document.getElementById("recErr");
+      const okEl = document.getElementById("recOk");
+      okEl.textContent = "";
+      const data = await post("/api/recover/password", {
+        username: document.getElementById("rec-user").value,
+        recovery_code: document.getElementById("rec-code").value,
+        new_password: document.getElementById("rec-new").value,
+      }, errEl);
+      if (!data) return;
+      okEl.textContent = "Listo. Ya podés entrar con la nueva contraseña.";
+      document.getElementById("log-user").value = document.getElementById("rec-user").value;
+      setTimeout(showLogin, 900);
+    };
 
     reg.addEventListener("submit", (e) => {
       e.preventDefault();
       const f = new FormData(reg);
       const user = String(f.get("username") || "");
       localStorage.setItem(REMEMBER_KEY, user);
-      post("/api/register", {
+      postAndEnter("/api/register", {
         display_name: f.get("display_name"),
         username: user,
         password: f.get("password"),
@@ -246,7 +753,7 @@
       const user = String(f.get("username") || "");
       if (document.getElementById("remember").checked) localStorage.setItem(REMEMBER_KEY, user);
       else localStorage.removeItem(REMEMBER_KEY);
-      post("/api/login", {
+      postAndEnter("/api/login", {
         username: user,
         password: f.get("password"),
       }, document.getElementById("logErr"));

@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from pathlib import Path
+import re
 
 from jarvis.actions import Actions
 from jarvis.bus import EventBus
@@ -32,13 +34,23 @@ from jarvis.security import redact_secrets, secret_values
 from jarvis.tools import TOOL_SCHEMAS, make_executor, schemas_for
 
 MAX_HISTORY = 24
-MAX_TOOL_ROUNDS = 6
+MAX_TOOL_ROUNDS = 4
+ACTION_TOOL_ROUNDS = 2
 # gpt-oss uses inner reasoning; keep headroom on the first/tool passes.
 REASONING_MAX_TOKENS = 2500
-SYNTHESIS_MAX_TOKENS = 1500
-REASONING_TEMPERATURE = 0.2
+ACTION_MAX_TOKENS = 900
+SYNTHESIS_MAX_TOKENS = 900
+REASONING_TEMPERATURE = 0.05
 SMALL_MAX_TOKENS = 220
-SMALL_TEMPERATURE = 0.65
+SMALL_TEMPERATURE = 0.35
+
+_ACTION_HINT = (
+    r"\b(abr[ií]|abrime|abrir|abre|open|lanz[aá]|ejecut[aá]|cerr[aá]|volumen|volume|silenci|"
+    r"mute|unmute|captura|screenshot|poneme|pon[eé]|reproduc|paus[aá]|busc[aá]|google|anot[aá]|nota|"
+    r"deshac|undo|timer|record[aá]|avis[aá]|whatsapp|mapa|ruta|traduc|"
+    r"portapapeles|clipboard|apag[aá]\s+la\s+pc|reinici[aá]\s+la\s+pc|bloque[aá]|"
+    r"sub[ií].{0,12}volumen|baj[aá].{0,12}volumen|siguiente|anterior|escritorio|descargas)\b"
+)
 
 
 class Brain:
@@ -284,7 +296,8 @@ class Brain:
             return
 
         small = is_small_local_model(self.settings, self.endpoint.model)
-        cap = 10 if small else MAX_HISTORY
+        actionish = bool(re.search(_ACTION_HINT, text, re.I))
+        cap = 6 if actionish else (10 if small else MAX_HISTORY)
         history[:] = history[-cap:]
 
         system = build_system_prompt(
@@ -293,26 +306,51 @@ class Brain:
             self.actions,
             self.profile_style,
             self.is_owner,
-            focus_pack=focus_pack,
+            focus_pack="" if actionish else focus_pack,
             user_message=text,
             enabled_packs=self.enabled_packs,
             custom_tone=self.custom_tone,
             city=self.city,
-            compact=small,
+            compact=small or actionish,
+            lean=actionish and not small,
             client_surface=getattr(self.actions, "client_surface", "hud"),
             device_note=getattr(self.actions, "device_note", ""),
         )
+        # Action turns: trim chat context hard for lower TTFT.
+        hist_for_llm = _trim_history_for_llm(history, keep=4 if actionish else cap)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
-            *history,
+            *hist_for_llm,
         ]
         if small:
             messages = messages_with_lock(messages, is_owner=self.is_owner)
+        if actionish:
+            messages.insert(
+                1,
+                {
+                    "role": "system",
+                    "content": (
+                        "PRECISION: this turn is a concrete command. "
+                        "Call the matching tool now. After tool results, one short Rioplatense confirmation. "
+                        "Never claim success without a tool call in this turn."
+                    ),
+                },
+            )
         tools = schemas_for(self.allowed_tools) if self.allowed_tools is not None else TOOL_SCHEMAS
         # Small locals often ignore tools; still try a tool loop so PC actions can fire.
-        max_tokens = SMALL_MAX_TOKENS if small else REASONING_MAX_TOKENS
-        temperature = SMALL_TEMPERATURE if small else REASONING_TEMPERATURE
-        tool_rounds = 2 if small else MAX_TOOL_ROUNDS
+        if small:
+            max_tokens = SMALL_MAX_TOKENS
+            temperature = SMALL_TEMPERATURE
+            tool_rounds = ACTION_TOOL_ROUNDS
+        elif actionish:
+            max_tokens = ACTION_MAX_TOKENS
+            temperature = REASONING_TEMPERATURE
+            tool_rounds = ACTION_TOOL_ROUNDS
+        else:
+            max_tokens = REASONING_MAX_TOKENS
+            temperature = REASONING_TEMPERATURE
+            tool_rounds = MAX_TOOL_ROUNDS
+        choice_mode: str | dict[str, Any] = "required" if actionish and not small else "auto"
 
         try:
             for _ in range(tool_rounds):
@@ -320,12 +358,21 @@ class Brain:
                     response = self._chat(
                         messages,
                         tools=tools,
-                        tool_choice="auto",
+                        tool_choice=choice_mode,
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    if is_tools_unsupported(exc):
+                    if choice_mode != "auto" and "tool_choice" in str(exc).lower():
+                        choice_mode = "auto"
+                        response = self._chat(
+                            messages,
+                            tools=tools,
+                            tool_choice="auto",
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        )
+                    elif is_tools_unsupported(exc):
                         raw_parts = []
                         for piece in self._iter_tokens(
                             messages, temperature=temperature, max_tokens=max_tokens
@@ -338,9 +385,22 @@ class Brain:
                             yield answer
                         self._store(session_id, answer)
                         return
-                    raise
+                    else:
+                        raise
                 choice = response.choices[0].message
                 tool_calls = choice.tool_calls or []
+                if not tool_calls and actionish and choice_mode == "required":
+                    # Provider accepted required but returned empty — nudge once then loosen.
+                    choice_mode = "auto"
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "No llamaste ninguna tool. Ejecutá YA la acción pedida con la tool correcta."
+                            ),
+                        }
+                    )
+                    continue
                 if tool_calls and _broken_tool_json(tool_calls):
                     messages.append(
                         {
@@ -381,8 +441,7 @@ class Brain:
                 messages.append(assistant_msg)
                 history.append(assistant_msg)
 
-                for call in tool_calls:
-                    result = self.execute(call.function.name, call.function.arguments or "{}")
+                for call, result in _execute_tools_parallel(self.execute, tool_calls):
                     tool_msg = {
                         "role": "tool",
                         "tool_call_id": call.id,
@@ -391,11 +450,14 @@ class Brain:
                     messages.append(tool_msg)
                     history.append(tool_msg)
 
+            synth_tokens = SYNTHESIS_MAX_TOKENS if not small else max_tokens
+            if actionish and not small:
+                synth_tokens = min(synth_tokens, 400)
             raw_parts = []
             for piece in self._iter_tokens(
                 messages,
                 temperature=temperature,
-                max_tokens=SYNTHESIS_MAX_TOKENS if not small else max_tokens,
+                max_tokens=synth_tokens,
             ):
                 raw_parts.append(piece)
                 yield piece
@@ -429,6 +491,45 @@ class Brain:
                 answer = f"{answer}\n{hint}"
             self._store(session_id, answer)
             yield answer
+
+
+def _trim_history_for_llm(history: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
+    """Keep recent turns; drop heavy tool dumps for faster prompts."""
+    if keep <= 0 or len(history) <= keep:
+        return list(history)
+    trimmed = history[-keep:]
+    # Avoid starting mid tool-result block.
+    while trimmed and trimmed[0].get("role") == "tool":
+        trimmed = trimmed[1:]
+    return trimmed
+
+
+def _execute_tools_parallel(
+    execute: Any,
+    tool_calls: list[Any],
+) -> list[tuple[Any, str]]:
+    if len(tool_calls) <= 1:
+        return [
+            (call, execute(call.function.name, call.function.arguments or "{}"))
+            for call in tool_calls
+        ]
+    results: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(tool_calls))) as pool:
+        futures = {
+            pool.submit(
+                execute,
+                call.function.name,
+                call.function.arguments or "{}",
+            ): call
+            for call in tool_calls
+        }
+        for fut in as_completed(futures):
+            call = futures[fut]
+            try:
+                results[call.id] = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                results[call.id] = f"Tool error: {exc}"
+    return [(call, results.get(call.id, "")) for call in tool_calls]
 
 
 def _broken_tool_json(tool_calls: list[Any]) -> bool:

@@ -203,12 +203,13 @@ def main() -> None:
         print(f"TTS: Piper CPU — {piper_model()}")
     else:
         print("TTS: Piper ausente (run.bat lo descarga; sin red la voz queda muda).")
-    from jarvis.config import _ollama_reachable
+    from jarvis.llm import resolve_llm
 
-    if _ollama_reachable(settings.ollama_base_url):
-        print(f"LLM: Ollama en {settings.ollama_base_url} ({settings.ollama_model})")
-    else:
-        print("LLM: Ollama no responde. Instalá https://ollama.com y: ollama pull gemma2:2b")
+    try:
+        ep = resolve_llm(settings)
+        print(f"LLM: {ep.label} — {ep.model}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"LLM: sin cerebro ({exc})")
     print("No abras https:// ni 127.0.0.1: Brave los rompe. La app abre su propia ventana.")
     if settings.hud_host in {"0.0.0.0", "::"}:
         phones = phone_base_urls(settings.hud_port)

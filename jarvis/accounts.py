@@ -180,7 +180,9 @@ class AccountStore:
                 user_id = int(cursor.lastrowid)
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Ese usuario ya existe.") from exc
-        return self.get_by_id(user_id)
+        user = self.get_by_id(user_id)
+        self.issue_recovery_code(user.username)
+        return user
 
     def login(self, username: str, password: str) -> User:
         user_key = username.strip().lower()
@@ -268,6 +270,96 @@ class AccountStore:
                 (digest, salt, user_id),
             )
             db.commit()
+
+    def lookup_usernames(self, display_name: str) -> list[str]:
+        name = display_name.strip().lower()
+        if len(name) < 2:
+            raise ValueError("Escribí el nombre que usaste al crear la cuenta.")
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                "SELECT username, display_name, disabled FROM users"
+            ).fetchall()
+        found: list[str] = []
+        for row in rows:
+            if int(row["disabled"] or 0):
+                continue
+            if str(row["display_name"] or "").strip().lower() == name:
+                found.append(str(row["username"]))
+        if not found:
+            raise ValueError("No encontré una cuenta con ese nombre.")
+        return found
+
+    def issue_recovery_code(self, username: str, display_name: str = "") -> tuple[str, Path]:
+        """Create/replace recovery code and write plaintext to data/recovery/<user>.txt."""
+        user_key = username.strip().lower()
+        user = self.get_by_username(user_key)
+        if user is None or user.disabled:
+            raise ValueError("Usuario no encontrado.")
+        if display_name.strip():
+            if user.display_name.strip().lower() != display_name.strip().lower():
+                raise ValueError("El nombre no coincide con esa cuenta.")
+        code = _new_recovery_code()
+        digest, salt = _hash_password(code)
+        with self._lock, self._connect() as db:
+            db.execute(
+                "UPDATE users SET recovery_hash=?, recovery_salt=? WHERE id=?",
+                (digest, salt, user.id),
+            )
+            db.commit()
+        path = _write_recovery_file(user_key, code)
+        return code, path
+
+    def ensure_recovery_code(self, username: str) -> Path | None:
+        """If missing, create recovery code on disk. Returns path when newly created."""
+        user_key = username.strip().lower()
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT id, recovery_hash FROM users WHERE username=?",
+                (user_key,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Usuario no encontrado.")
+        if row["recovery_hash"]:
+            return None
+        code = _new_recovery_code()
+        digest, salt = _hash_password(code)
+        with self._lock, self._connect() as db:
+            db.execute(
+                "UPDATE users SET recovery_hash=?, recovery_salt=? WHERE id=?",
+                (digest, salt, int(row["id"])),
+            )
+            db.commit()
+        return _write_recovery_file(user_key, code)
+
+    def reset_password_with_recovery(self, username: str, recovery_code: str, new_password: str) -> None:
+        if len(new_password) < 8:
+            raise ValueError("La contraseña nueva tiene que tener al menos 8 caracteres.")
+        user_key = username.strip().lower()
+        code = recovery_code.strip().replace(" ", "").upper()
+        if len(code) < 8:
+            raise ValueError("Código de recuperación inválido.")
+        with self._lock, self._connect() as db:
+            row = db.execute("SELECT * FROM users WHERE username = ?", (user_key,)).fetchone()
+            if row is None:
+                raise ValueError("Usuario no encontrado.")
+            if int(row["disabled"] or 0):
+                raise ValueError("Esta cuenta está deshabilitada.")
+            rh = row["recovery_hash"] if "recovery_hash" in row.keys() else ""
+            rs = row["recovery_salt"] if "recovery_salt" in row.keys() else ""
+            if not rh or not rs:
+                raise ValueError(
+                    "Esta cuenta aún no tiene código. Pedí uno con tu nombre de perfil."
+                )
+            if not _verify_password(code, rs, rh):
+                raise ValueError("Código de recuperación incorrecto.")
+            digest, salt = _hash_password(new_password)
+            db.execute(
+                "UPDATE users SET password_hash=?, salt=? WHERE id=?",
+                (digest, salt, int(row["id"])),
+            )
+            db.commit()
+        # Rotate recovery code after successful reset
+        self.issue_recovery_code(user_key)
 
     def set_disabled(self, user_id: int, disabled: bool) -> User:
         user = self.get_by_id(user_id)
@@ -391,6 +483,10 @@ def _migrate(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
     if "custom_tone" not in cols:
         db.execute("ALTER TABLE users ADD COLUMN custom_tone TEXT NOT NULL DEFAULT 'equilibrado'")
+    if "recovery_hash" not in cols:
+        db.execute("ALTER TABLE users ADD COLUMN recovery_hash TEXT NOT NULL DEFAULT ''")
+    if "recovery_salt" not in cols:
+        db.execute("ALTER TABLE users ADD COLUMN recovery_salt TEXT NOT NULL DEFAULT ''")
     owner = db.execute("SELECT id FROM users WHERE role='owner' LIMIT 1").fetchone()
     if owner is None:
         first = db.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
@@ -432,6 +528,27 @@ def _hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str
 def _verify_password(password: str, salt_hex: str, expected_hex: str) -> bool:
     digest, _ = _hash_password(password, salt_hex)
     return hmac.compare_digest(digest, expected_hex)
+
+
+def _new_recovery_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    raw = os.urandom(10)
+    return "".join(alphabet[b % len(alphabet)] for b in raw)
+
+
+def _write_recovery_file(username: str, code: str) -> Path:
+    folder = DATA_DIR / "recovery"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{username}.txt"
+    path.write_text(
+        "Ilaria — código de recuperación (solo esta PC)\n"
+        f"usuario: {username}\n"
+        f"codigo: {code}\n"
+        "Usalo en /welcome → Olvidé usuario o contraseña.\n"
+        "Después de restablecer la clave se genera un código nuevo.\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def _row_to_user(row: sqlite3.Row) -> User:

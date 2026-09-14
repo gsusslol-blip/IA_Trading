@@ -126,6 +126,21 @@ class PasswordIn(BaseModel):
     new: str = Field(min_length=8, max_length=128)
 
 
+class RecoverUsernameIn(BaseModel):
+    display_name: str = Field(min_length=2, max_length=80)
+
+
+class RecoverIssueIn(BaseModel):
+    username: str
+    display_name: str = Field(min_length=2, max_length=80)
+
+
+class RecoverPasswordIn(BaseModel):
+    username: str
+    recovery_code: str = Field(min_length=8, max_length=64)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 class NoteIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
@@ -341,6 +356,51 @@ def create_hud(state: AppState) -> FastAPI:
         set_session(response, token)
         return {"ok": True, "user": user.public(), "token": token}
 
+    @app.post("/api/recover/username")
+    async def recover_username(payload: RecoverUsernameIn, request: Request) -> dict[str, Any]:
+        ip = request.client.host if request.client else "local"
+        if not gate.allow(f"rec-user:{ip}", 8, 900):
+            raise HTTPException(status_code=429, detail="Demasiados intentos. Esperá un poco.")
+        try:
+            usernames = state.accounts.lookup_usernames(payload.display_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "usernames": usernames}
+
+    @app.post("/api/recover/issue")
+    async def recover_issue(payload: RecoverIssueIn, request: Request) -> dict[str, Any]:
+        ip = request.client.host if request.client else "local"
+        if not gate.allow(f"rec-issue:{ip}", 5, 900):
+            raise HTTPException(status_code=429, detail="Demasiados intentos. Esperá un poco.")
+        try:
+            _code, path = state.accounts.issue_recovery_code(
+                payload.username,
+                payload.display_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "path": str(path),
+            "hint": f"Código guardado en esta PC: {path.name} (carpeta data/recovery).",
+        }
+
+    @app.post("/api/recover/password")
+    async def recover_password(payload: RecoverPasswordIn, request: Request) -> dict[str, bool]:
+        ip = request.client.host if request.client else "local"
+        key = f"rec-pass:{ip}:{payload.username.strip().lower()}"
+        if not gate.allow(key, 6, 900):
+            raise HTTPException(status_code=429, detail="Demasiados intentos. Esperá un poco.")
+        try:
+            state.accounts.reset_password_with_recovery(
+                payload.username,
+                payload.recovery_code,
+                payload.new_password,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True}
+
     @app.post("/api/logout")
     async def logout(request: Request, response: Response) -> dict[str, bool]:
         state.accounts.drop_session(session_token(request))
@@ -527,6 +587,7 @@ def create_hud(state: AppState) -> FastAPI:
         async def events():
             loop = asyncio.get_running_loop()
             queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
+            started = time.perf_counter()
 
             def produce() -> None:
                 try:
@@ -545,10 +606,36 @@ def create_hud(state: AppState) -> FastAPI:
 
             worker = threading.Thread(target=produce, name="ilaria-sse", daemon=True)
             worker.start()
+            parts: list[str] = []
+            early_sentence = ""
+            early_audio_url = None
+            early_sent = False
             while True:
                 kind, value = await queue.get()
                 if kind == "token" and value:
+                    parts.append(value)
                     yield f"event: token\ndata: {json.dumps({'text': value}, ensure_ascii=False)}\n\n"
+                    if payload.speak and not early_sent:
+                        from jarvis.tts import first_speakable_sentence
+
+                        sentence = first_speakable_sentence("".join(parts))
+                        if sentence:
+                            early_sent = True
+                            early_sentence = sentence
+                            if gate.allow(f"tts:{user.id}", 20, 60):
+                                try:
+                                    path = await speak_to_file(
+                                        state.settings_for(user),
+                                        sentence,
+                                        f"tts-{user.id}-early-{time.time_ns()}.mp3",
+                                    )
+                                    early_audio_url = audio_api_path(path.name)
+                                    yield (
+                                        "event: early_audio\n"
+                                        f"data: {json.dumps({'audio_url': early_audio_url, 'text': sentence}, ensure_ascii=False)}\n\n"
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    early_audio_url = None
                 elif kind == "error":
                     yield f"event: error\ndata: {json.dumps({'detail': value or 'error'}, ensure_ascii=False)}\n\n"
                     return
@@ -556,11 +643,22 @@ def create_hud(state: AppState) -> FastAPI:
                     break
             reply = _with_android_hint(brain, brain._last_assistant(session_id))
             audio_url = None
-            if payload.speak and reply.strip():
+            skip_full_tts = False
+            # If early TTS already covered a short final reply, skip a second render.
+            if (
+                early_audio_url
+                and early_sentence
+                and reply.strip()
+                and len(reply.strip()) <= max(len(early_sentence) + 36, 96)
+                and reply.strip().startswith(early_sentence[: min(24, len(early_sentence))])
+            ):
+                audio_url = early_audio_url
+                skip_full_tts = True
+            elif payload.speak and reply.strip():
                 if not gate.allow(f"tts:{user.id}", 20, 60):
                     yield (
                         "event: done\n"
-                        f"data: {json.dumps({'reply': reply, 'audio_url': None, 'author': author, 'tts': 'rate', 'phone_actions': _phone_payload(brain)}, ensure_ascii=False)}\n\n"
+                        f"data: {json.dumps({'reply': reply, 'audio_url': early_audio_url, 'author': author, 'tts': 'rate', 'latency_ms': int((time.perf_counter() - started) * 1000), 'phone_actions': _phone_payload(brain)}, ensure_ascii=False)}\n\n"
                     )
                     return
                 try:
@@ -573,12 +671,12 @@ def create_hud(state: AppState) -> FastAPI:
                 except Exception as exc:  # noqa: BLE001
                     yield (
                         "event: done\n"
-                        f"data: {json.dumps({'reply': reply, 'audio_url': None, 'author': author, 'tts_error': str(exc), 'phone_actions': _phone_payload(brain)}, ensure_ascii=False)}\n\n"
+                        f"data: {json.dumps({'reply': reply, 'audio_url': early_audio_url, 'author': author, 'tts_error': str(exc), 'latency_ms': int((time.perf_counter() - started) * 1000), 'phone_actions': _phone_payload(brain)}, ensure_ascii=False)}\n\n"
                     )
                     return
             yield (
                 "event: done\n"
-                f"data: {json.dumps({'reply': reply, 'audio_url': audio_url, 'author': author, 'phone_actions': _phone_payload(brain)}, ensure_ascii=False)}\n\n"
+                f"data: {json.dumps({'reply': reply, 'audio_url': audio_url, 'author': author, 'early': bool(early_audio_url), 'skip_full_tts': skip_full_tts, 'latency_ms': int((time.perf_counter() - started) * 1000), 'phone_actions': _phone_payload(brain)}, ensure_ascii=False)}\n\n"
             )
 
         return StreamingResponse(

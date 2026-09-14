@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -12,6 +14,8 @@ from jarvis.config import DATA_DIR, Settings
 from jarvis.security import safe_under
 
 DEFAULT_VOICE = "es-AR-ElenaNeural"
+_CACHE_DIR = DATA_DIR / "tts-cache"
+_CACHE_MAX_CHARS = 140
 
 
 def child_speech_pacing(text: str) -> str:
@@ -64,6 +68,18 @@ def _cleanup() -> None:
             pass
 
 
+def _cache_key(clean: str, settings: Settings) -> str:
+    provider = _provider(settings)
+    voice = (settings.tts_voice or "").strip() or DEFAULT_VOICE
+    raw = f"{provider}|{voice}|{clean}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:28]
+
+
+def _cache_path(clean: str, settings: Settings, suffix: str) -> Path:
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return _CACHE_DIR / f"{_cache_key(clean, settings)}{suffix}"
+
+
 def audio_api_path(filename: str) -> str:
     name = Path(filename).name
     _assert_audio_name(name)
@@ -97,6 +113,21 @@ def _provider(settings: Settings) -> str:
     return (os.getenv("TTS_PROVIDER") or getattr(settings, "tts_provider", "piper") or "piper").strip().lower()
 
 
+def first_speakable_sentence(text: str) -> str | None:
+    """Return first sentence when enough text arrived for early TTS."""
+    clean = " ".join((text or "").split())
+    if len(clean) < 12:
+        return None
+    match = re.search(r"^(.+?[.!?…])(?:\s|$)", clean)
+    if match and len(match.group(1)) >= 10:
+        return match.group(1).strip()
+    if len(clean) >= 72:
+        cut = clean[:72]
+        sp = cut.rfind(" ")
+        return (cut[:sp] if sp > 24 else cut).strip()
+    return None
+
+
 async def speak_to_file(settings: Settings, text: str, name: str | None = None) -> Path:
     clean = _for_speech(text)
     if not clean:
@@ -106,13 +137,33 @@ async def speak_to_file(settings: Settings, text: str, name: str | None = None) 
     stamp = Path(stamp).name
     if not stamp.startswith("tts-"):
         stamp = f"tts-{stamp}"
-    if _provider(settings) in {"edge", "edge-tts"}:
-        return await _edge_mp3(settings, clean, stamp)
-    from jarvis.piper_tts import synthesize_wav
 
-    wav = DATA_DIR / (Path(stamp).stem + ".wav")
-    await asyncio.to_thread(synthesize_wav, clean, wav)
-    return wav
+    use_edge = _provider(settings) in {"edge", "edge-tts"}
+    suffix = ".mp3" if use_edge else ".wav"
+    dest = DATA_DIR / (Path(stamp).stem + suffix)
+
+    if len(clean) <= _CACHE_MAX_CHARS:
+        cached = _cache_path(clean, settings, suffix)
+        if cached.is_file() and cached.stat().st_size > 64:
+            shutil.copy2(cached, dest)
+            return dest
+
+    if use_edge:
+        path = await _edge_mp3(settings, clean, stamp)
+    else:
+        from jarvis.piper_tts import synthesize_wav
+
+        path = DATA_DIR / (Path(stamp).stem + ".wav")
+        await asyncio.to_thread(synthesize_wav, clean, path)
+
+    if len(clean) <= _CACHE_MAX_CHARS:
+        try:
+            cached = _cache_path(clean, settings, path.suffix.lower())
+            if not cached.is_file():
+                shutil.copy2(path, cached)
+        except OSError:
+            pass
+    return path
 
 
 async def _edge_mp3(settings: Settings, clean: str, stamp: str) -> Path:

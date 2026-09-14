@@ -166,6 +166,26 @@ class PcActionsLocalTests(unittest.TestCase):
         self.assertTrue(looks_like_cloud_model("openai/gpt-oss-20b"))
         self.assertFalse(looks_like_cloud_model("gemma2:2b"))
 
+    def test_auto_prefers_groq_when_llm_model_is_cloud(self) -> None:
+        settings = _settings()
+        with patch("jarvis.llm._ollama_reachable", return_value=True):
+            ep = resolve_llm(settings)
+        self.assertEqual(ep.label, "groq")
+        self.assertIn("gpt-oss", ep.model)
+
+    def test_auto_prefers_groq_over_small_ollama_when_key_exists(self) -> None:
+        settings = _settings(llm_model="")
+        with patch("jarvis.llm._ollama_reachable", return_value=True):
+            ep = resolve_llm(settings)
+        self.assertEqual(ep.label, "groq")
+
+    def test_auto_uses_ollama_when_llm_model_is_local_tag(self) -> None:
+        settings = _settings(llm_model="gemma2:2b", groq_api_key="gsk_test")
+        with patch("jarvis.llm._ollama_reachable", return_value=True):
+            ep = resolve_llm(settings)
+        self.assertEqual(ep.label, "ollama")
+        self.assertEqual(ep.model, "gemma2:2b")
+
     def test_phone_volume_uses_phone_hands(self) -> None:
         captured: list[tuple[str, dict]] = []
 
