@@ -593,8 +593,28 @@ PC_TOOLS = {
     "power_control",
     "relaunch_service",
 }
+# webbrowser / PC shell openers — never expose these on phone surfaces
+PHONE_BLOCKED_TOOLS = PC_TOOLS | {
+    "open_browser",
+    "google",
+    "open_maps",
+    "system_status",
+    "list_files",
+    "read_file",
+    "control_device",
+    "get_system_health",
+    "check_lan_status",
+}
 MEMBER_TOOLS = ALL_TOOL_NAMES - PC_TOOLS
 
 
 def schemas_for(allowed: set[str]) -> list[dict[str, Any]]:
     return [item for item in TOOL_SCHEMAS if _tool_name(item) in allowed]
+
+
+def tools_for_surface(allowed: set[str] | None, surface: str) -> list[dict[str, Any]]:
+    """Filter tool schemas so phone sessions cannot trigger PC-side openers."""
+    base = set(ALL_TOOL_NAMES) if allowed is None else set(allowed)
+    if (surface or "hud").strip().lower() in {"android", "ios", "iphone", "ipad"}:
+        base -= PHONE_BLOCKED_TOOLS
+    return schemas_for(base)

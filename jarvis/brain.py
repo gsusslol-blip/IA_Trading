@@ -31,7 +31,7 @@ from jarvis.personality import (
     messages_with_lock,
 )
 from jarvis.security import redact_secrets, secret_values
-from jarvis.tools import TOOL_SCHEMAS, make_executor, schemas_for
+from jarvis.tools import PHONE_BLOCKED_TOOLS, make_executor, tools_for_surface
 
 MAX_HISTORY = 24
 MAX_TOOL_ROUNDS = 4
@@ -86,6 +86,12 @@ class Brain:
         def execute(name: str, arguments_json: str) -> str:
             if self.allowed_tools is not None and name not in self.allowed_tools:
                 return "Permiso denegado: esa accion es solo del dueno."
+            surface = (getattr(self.actions, "client_surface", "hud") or "hud").strip().lower()
+            if surface in {"android", "ios", "iphone", "ipad"} and name in PHONE_BLOCKED_TOOLS:
+                return (
+                    "Eso es de la PC. Pedilo desde el HUD del escritorio, "
+                    "o usá una acción del celular."
+                )
             result = raw_execute(name, arguments_json)
             return redact_secrets(result, extra=secret_values(self.settings))
 
@@ -336,7 +342,10 @@ class Brain:
                     ),
                 },
             )
-        tools = schemas_for(self.allowed_tools) if self.allowed_tools is not None else TOOL_SCHEMAS
+        tools = tools_for_surface(
+            self.allowed_tools,
+            getattr(self.actions, "client_surface", "hud"),
+        )
         # Small locals often ignore tools; still try a tool loop so PC actions can fire.
         if small:
             max_tokens = SMALL_MAX_TOKENS

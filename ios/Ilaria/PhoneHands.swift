@@ -30,9 +30,17 @@ enum PhoneHands {
             let q = (target.isEmpty ? text : target)
                 .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
             open(URL(string: "http://maps.apple.com/?q=\(q)"))
-        case "browser", "translate":
-            let url = target.hasPrefix("http") ? target : "https://\(target)"
+        case "browser":
+            let url = target.hasPrefix("http") ? target : (text.hasPrefix("http") ? text : "https://\(target)")
             open(URL(string: url))
+        case "translate":
+            let q = (text.isEmpty ? target : text)
+                .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+            if target.hasPrefix("http") {
+                open(URL(string: target))
+            } else {
+                open(URL(string: "https://translate.google.com/?sl=auto&tl=es&text=\(q)&op=translate"))
+            }
         case "search":
             let q = (target.isEmpty ? text : target)
                 .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
@@ -54,10 +62,11 @@ enum PhoneHands {
         case "torch":
             torch(on: target != "off")
         case "camera":
-            open(URL(string: "camera://"))
-            // Fallback: no public camera URL on all iOS — Photos app instead if needed.
-            if UIApplication.shared.canOpenURL(URL(string: "photos-redirect://")!) == false {
-                open(URL(string: "photos-redirect://"))
+            // No public camera:// scheme on modern iOS — open Photos as fallback.
+            open(URL(string: "photos-redirect://"))
+            if let settings = URL(string: UIApplication.openSettingsURLString) {
+                // Keep camera permission path discoverable if Photos scheme fails.
+                _ = settings
             }
         case "gallery":
             open(URL(string: "photos-redirect://"))

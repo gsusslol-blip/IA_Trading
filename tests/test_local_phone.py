@@ -138,6 +138,41 @@ class LocalPhoneTests(unittest.TestCase):
         self.assertEqual(captured[0][1]["action"], "youtube")
         self.assertEqual(captured[0][1]["target"], "cerati")
 
+    def test_maps_on_ios_uses_phone_hands(self) -> None:
+        captured: list[tuple[str, dict]] = []
+
+        def execute(name: str, arguments_json: str) -> str:
+            captured.append((name, json.loads(arguments_json)))
+            return "OK"
+
+        try_local_command(
+            "cómo llego a Palermo",
+            execute,
+            Memory(),
+            load_settings(),
+            surface="ios",
+        )
+        self.assertEqual(captured[0][0], "phone_hands")
+        self.assertEqual(captured[0][1]["action"], "maps")
+        self.assertIn("Palermo", captured[0][1]["target"])
+
+    def test_https_on_phone_opens_browser_action(self) -> None:
+        captured: list[tuple[str, dict]] = []
+
+        def execute(name: str, arguments_json: str) -> str:
+            captured.append((name, json.loads(arguments_json)))
+            return "OK"
+
+        try_local_command(
+            "https://example.com",
+            execute,
+            Memory(),
+            load_settings(),
+            surface="android",
+        )
+        self.assertEqual(captured[0][0], "phone_hands")
+        self.assertEqual(captured[0][1]["action"], "browser")
+
 
 if __name__ == "__main__":
     unittest.main()

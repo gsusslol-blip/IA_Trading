@@ -204,11 +204,15 @@ def try_local_command(
         return run("media", action="vol_down")
 
     if re.search(r"\b(silenci(?:ar|[oaá])|mute(?:ar)?|sin\s+sonido)\b", lower):
+        if android:
+            return run("phone_hands", action="volume", target="mute")
         return run("media", action="mute")
     if re.search(
         r"\b(desilenci|unmute|con\s+sonido|sac[aá]\s+el\s+silencio|quit[aá]\s+el\s+silencio)\b",
         lower,
     ):
+        if android:
+            return run("phone_hands", action="volume", target="unmute")
         return run("media", action="mute")
 
     if re.fullmatch(r"(escritorio|desktop)", lower):
@@ -226,6 +230,12 @@ def try_local_command(
 
     media_key = _media_key(lower)
     if media_key:
+        if android:
+            # Phone: map media keys to music / open Spotify when possible.
+            if media_key in {"play_pause", "next", "prev", "stop"}:
+                return run("phone_hands", action="music", target="")
+            if media_key == "mute":
+                return run("phone_hands", action="volume", target="mute")
         return run("media", action=media_key)
 
     if re.search(
@@ -466,10 +476,16 @@ def try_local_command(
         re.I,
     )
     if maps:
-        return run("open_maps", destination=maps.group(1).strip(), origin="")
+        dest = maps.group(1).strip()
+        if android:
+            return run("phone_hands", action="maps", target=dest)
+        return run("open_maps", destination=dest, origin="")
 
     if re.fullmatch(r"https?://\S+", raw.strip(), re.I):
-        return run("open_browser", url=raw.strip())
+        url = raw.strip()
+        if android:
+            return run("phone_hands", action="browser", target=url)
+        return run("open_browser", url=url)
 
     opened = re.search(
         r"(?:abr[ií]|abrime|abrir|abre|open|lanz[aá]|ejecut[aá]|and[aá]\s+a|"
@@ -503,6 +519,8 @@ def try_local_command(
     if search:
         query = search.group(1).strip()
         if lower.startswith("google"):
+            if android:
+                return run("phone_hands", action="search", target=query)
             return run("google", query=query)
         return run("web_search", query=query, max_results=5)
 
@@ -708,6 +726,8 @@ def _open_target(target: str, run: Callable[..., str], *, android: bool) -> str 
     from jarvis.bank_apps import is_banking
 
     if re.match(r"https?://", target, re.I):
+        if android:
+            return run("phone_hands", action="browser", target=target)
         return run("open_browser", url=target)
     lowered = target.lower().strip()
     if lowered in _WEB_TARGETS:

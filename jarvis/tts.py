@@ -114,14 +114,28 @@ def _provider(settings: Settings) -> str:
 
 
 def first_speakable_sentence(text: str) -> str | None:
-    """Return first sentence when enough text arrived for early TTS."""
+    """Return first speakable chunk when enough text arrived for early TTS."""
     clean = " ".join((text or "").split())
-    if len(clean) < 12:
+    if len(clean) < 8:
         return None
     match = re.search(r"^(.+?[.!?…])(?:\s|$)", clean)
-    if match and len(match.group(1)) >= 10:
-        return match.group(1).strip()
-    if len(clean) >= 72:
+    if match:
+        first = match.group(1).strip()
+        # Short ack ("Listo.") — wait for more, or take next sentence / whole short reply.
+        if len(first) >= 12:
+            return first
+        rest = clean[len(first) :].lstrip()
+        if rest:
+            nxt = re.search(r"^(.+?[.!?…])(?:\s|$)", rest)
+            if nxt:
+                both = f"{first} {nxt.group(1).strip()}".strip()
+                if len(both) >= 10:
+                    return both
+            if len(clean) >= 18:
+                return clean if len(clean) <= 96 else clean[:96].rsplit(" ", 1)[0]
+        elif clean.endswith((".", "!", "?", "…")) and len(clean) >= 8:
+            return clean
+    if len(clean) >= 48:
         cut = clean[:72]
         sp = cut.rfind(" ")
         return (cut[:sp] if sp > 24 else cut).strip()

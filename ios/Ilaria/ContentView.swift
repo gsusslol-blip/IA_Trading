@@ -112,6 +112,7 @@ struct ContentView: View {
                 }
             }
             log.append(Bubble(mine: false, text: out.text))
+            SoloTts.speak(out.text)
             status = out.fromPc ? "PC" : "local"
         } catch {
             if let local = PhoneLocal.handle(raw: text, prefs: prefs) {
