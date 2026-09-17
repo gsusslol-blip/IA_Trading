@@ -218,6 +218,49 @@ def build_system_prompt(
     device_note: str = "",
     lean: bool = False,
 ) -> str:
+    """Full system prompt (legacy single blob). Prefer split_system_prompt for cache."""
+    static, live = split_system_prompt(
+        settings,
+        memory,
+        actions,
+        profile_style=profile_style,
+        is_owner=is_owner,
+        focus_pack=focus_pack,
+        user_message=user_message,
+        enabled_packs=enabled_packs,
+        custom_tone=custom_tone,
+        city=city,
+        compact=compact,
+        client_surface=client_surface,
+        device_note=device_note,
+        lean=lean,
+    )
+    if live:
+        return f"{static}\n\n--- LIVE CONTEXT (changes every turn; keep after static for KV cache) ---\n{live}"
+    return static
+
+
+def split_system_prompt(
+    settings: Settings,
+    memory: Memory,
+    actions: Actions,
+    profile_style: str = "",
+    is_owner: bool = False,
+    focus_pack: str = "",
+    user_message: str = "",
+    enabled_packs: list[str] | None = None,
+    custom_tone: str = "equilibrado",
+    city: str = "",
+    compact: bool = False,
+    client_surface: str = "hud",
+    device_note: str = "",
+    lean: bool = False,
+) -> tuple[str, str]:
+    """Return (static_prefix, live_suffix) for Ollama/Groq prompt-cache friendly order.
+
+    Static must stay byte-stable across turns so the KV cache hits. Live holds
+    datetime, journal, system_status, RAG hits.
+    """
     now = datetime.now(ZoneInfo(settings.timezone))
     stamp = now.strftime("%Y-%m-%d %H:%M (%A)")
     facts = memory.as_prompt()
@@ -229,16 +272,21 @@ def build_system_prompt(
         else "MEMBER: no privileged PC tools unless owner enabled members_pc_hands; never power_control."
     )
     if lean:
-        return action_fast_prompt(
+        static = action_fast_prompt(
             is_owner=is_owner,
             address_as=user,
-            stamp=stamp,
+            stamp="(see LIVE)",
             name=name,
-            facts=facts,
+            facts=facts[:160],
             rank=rank,
             client_surface=client_surface,
             device_note=device_note,
         )
+        # Move clock out of static — stamp was busting the cache every minute.
+        static = static.replace("Hora: (see LIVE).", "Hora: ver LIVE.")
+        live = f"Current local datetime: {stamp}"
+        return static, live
+
     pack = routine_slot(now.hour)
     routine = routine_style(settings.timezone)
     stored = memory.recall("intereses")
@@ -275,32 +323,7 @@ def build_system_prompt(
             )
         except Exception:
             rag_block = ""
-    if compact:
-        extra = ""
-        if (client_surface or "") in {"android", "ios"}:
-            extra = (
-                "\nPHONE: user is on the Ilaria mobile app. Use phone_hands for device. "
-                f"{(device_note or '')[:160]}"
-            )
-        return compact_system_prompt(
-            is_owner=is_owner,
-            address_as=user,
-            custom_tone=custom_tone,
-            pack_block=f"{rank}\n{dynamic}",
-            facts=facts,
-            journal=journal,
-            stamp=stamp,
-            name=name,
-            rag_block=rag_block,
-        ) + extra
-    context = get_personality_context(
-        pack,
-        status_payload,
-        address_as=user,
-        custom_tone=custom_tone,
-        city=city or "",
-        is_owner=is_owner,
-    )
+
     phone_block = ""
     if (client_surface or "") in {"android", "ios"}:
         phone_block = (
@@ -310,7 +333,43 @@ def build_system_prompt(
             "Do NOT use PC open_app/screenshot/power_control "
             f"for the phone.\n{(device_note or '')[:240]}\n"
         )
-    return f"""{context}
+
+    if compact:
+        extra = ""
+        if (client_surface or "") in {"android", "ios"}:
+            extra = (
+                "\nPHONE: user is on the Ilaria mobile app. Use phone_hands for device. "
+                f"{(device_note or '')[:160]}"
+            )
+        # compact_system_prompt embeds stamp/journal — split them for cache
+        static_core = compact_system_prompt(
+            is_owner=is_owner,
+            address_as=user,
+            custom_tone=custom_tone,
+            pack_block=f"{rank}\n{dynamic}",
+            facts=facts,
+            journal="(see LIVE)",
+            stamp="(see LIVE)",
+            name=name,
+            rag_block="",
+        ) + extra
+        live = (
+            f"Current local datetime: {stamp}\n"
+            f"SHORT-TERM BITÁCORA:\n{journal}\n"
+            f"{rag_block}"
+        ).strip()
+        return static_core, live
+
+    context = get_personality_context(
+        pack,
+        "(live system_status — see LIVE CONTEXT)",
+        address_as=user,
+        custom_tone=custom_tone,
+        city=city or "",
+        is_owner=is_owner,
+    )
+
+    static = f"""{context}
 
 Assistant display name: {name}
 
@@ -324,14 +383,16 @@ Time-of-day posture detail:
 
 {actions.capabilities()}
 {phone_block}
-Current local datetime: {stamp}
 Known user facts:
 {facts}
-
-SHORT-TERM BITÁCORA (this user's journal only — cite when asked what they were doing):
-{journal}
-{rag_block}
 """
+    live = (
+        f"Current local datetime: {stamp}\n"
+        f"LIVE system_status:\n{status_payload}\n"
+        f"SHORT-TERM BITÁCORA (this user's journal only):\n{journal}\n"
+        f"{rag_block}"
+    ).strip()
+    return static.strip(), live
 
 
 def action_fast_prompt(

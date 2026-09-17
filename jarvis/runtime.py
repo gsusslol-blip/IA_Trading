@@ -264,6 +264,12 @@ def main() -> None:
         start_health_inbox_watcher(settings)
     except Exception as exc:  # noqa: BLE001
         print(f"[INBOX] skip: {exc}")
+    try:
+        from jarvis.ha_fatigue import start_ha_fatigue_watcher
+
+        start_ha_fatigue_watcher(settings)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[HA-FATIGUE] skip: {exc}")
     start_wake_listener(state)
     start_vision(state)
     if os.getenv("JARVIS_OPEN_BROWSER", "1") == "0":
