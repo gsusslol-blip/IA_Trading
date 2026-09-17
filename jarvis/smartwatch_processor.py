@@ -91,18 +91,23 @@ def escribir_metricas_demo(
     sueno: float = 7.2,
     hr: float = 68,
     hrv: float = 62,
+    source: str = "demo_import",
+    source_file: str | None = None,
 ) -> Path:
     """Utility: drop a realistic sandbox file for offline tests / first run."""
     path = metrics_path(usuario_activo)
-    payload = {
+    payload: dict[str, Any] = {
         "pasos_hoy": int(pasos),
         "horas_sueno_anoche": float(sueno),
         "hr_promedio_bpm": float(hr),
         "hrv_ms": float(hrv),
+        "nivel_energia_estimado": estimar_energia(float(sueno), float(hrv)),
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "source": "demo_import",
+        "source": source,
         "imported_at": time.time(),
     }
+    if source_file:
+        payload["source_file"] = source_file
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return path
 
@@ -134,6 +139,8 @@ def importar_csv_basico(usuario_activo: str, csv_path: Path) -> Path:
         sueno=_num(("sueno", "sueño", "sleep", "horas_sueno_anoche"), 7.0),
         hr=_num(("hr", "hr_promedio_bpm", "bpm"), 70),
         hrv=_num(("hrv", "hrv_ms"), 55),
+        source="health_inbox_csv",
+        source_file=csv_path.name,
     )
 
 
