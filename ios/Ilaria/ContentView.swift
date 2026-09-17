@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct Bubble: Identifiable {
     let id = UUID()
@@ -140,6 +141,27 @@ struct ProfileSheet: View {
                     TextField("http://192.168.x.x:8787", text: $prefs.baseUrl)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
+                    Button("Buscar PC en Wi‑Fi") {
+                        info = "Buscando…"
+                        Task.detached {
+                            let found = LanFind.find()
+                            await MainActor.run {
+                                if let found {
+                                    prefs.baseUrl = Prefs.normalizeBase(found)
+                                    info = "Encontrada: \(prefs.baseUrl)"
+                                    var comps = URLComponents()
+                                    comps.scheme = "ilaria"
+                                    comps.host = "connected"
+                                    comps.queryItems = [URLQueryItem(name: "ip", value: prefs.baseUrl)]
+                                    if let deep = comps.url {
+                                        UIApplication.shared.open(deep)
+                                    }
+                                } else {
+                                    info = "No encontré la PC. Misma Wi‑Fi y run.bat abierto."
+                                }
+                            }
+                        }
+                    }
                     TextField("usuario", text: $user)
                         .textInputAutocapitalization(.never)
                     SecureField("clave", text: $pass)

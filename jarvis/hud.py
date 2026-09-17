@@ -263,10 +263,19 @@ def create_hud(state: AppState) -> FastAPI:
 
         report = await asyncio.to_thread(get_system_health, state.settings)
         ram = report.get("resource_usage") or {}
+        from jarvis.tts_warmer import cache_snapshot
+
+        warm = cache_snapshot()
         return {
             "ollama": bool(report.get("ollama_alive")),
             "piper": bool(report.get("piper_ready")),
-            "piper_cache_phrases": phrase_cache_count(),
+            "piper_cache_phrases": int(
+                warm.get("cached_phrases_count")
+                if warm.get("cached_phrases_count") is not None
+                else phrase_cache_count()
+            ),
+            "tts_cache_warm": warm.get("status"),
+            "tts_cache_ready": bool(warm.get("ready")),
             "hud": report.get("hud_health") == "OK",
             "hud_port": report.get("hud_port"),
             "udp_discover": bool(report.get("udp_discover_bound")),

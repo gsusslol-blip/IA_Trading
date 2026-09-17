@@ -241,6 +241,12 @@ def main() -> None:
     worker.start()
     wait_health(settings.hud_port)
     start_discover(settings)
+    try:
+        from jarvis.tts_warmer import start_tts_warm
+
+        start_tts_warm(settings, limit=16)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARM_UP] skip: {exc}")
     start_wake_listener(state)
     start_vision(state)
     if os.getenv("JARVIS_OPEN_BROWSER", "1") == "0":

@@ -25,6 +25,10 @@ class DiscoverTests(unittest.TestCase):
 
     def test_simple_ack_constant(self) -> None:
         self.assertEqual(ACK_SIMPLE, b"ILARIA_SERVER_ACK")
+        from jarvis.discover import ACK_IOS, PROBE_IOS
+
+        self.assertEqual(ACK_IOS, b"ILARIA_IOS_SERVER_ACK")
+        self.assertEqual(PROBE_IOS, b"ILARIA_IOS_DISCOVER")
 
 if __name__ == "__main__":
     unittest.main()

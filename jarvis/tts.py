@@ -227,6 +227,12 @@ async def speak_to_file(settings: Settings, text: str, name: str | None = None) 
                 slug_path = phrase_cache_dir() / f"{_phrase_slug(clean)}{path.suffix.lower()}"
                 if not slug_path.is_file():
                     shutil.copy2(path, slug_path)
+                    try:
+                        from jarvis.tts_warmer import incrementar_contador_tts
+
+                        incrementar_contador_tts(1)
+                    except Exception:
+                        pass
         except Exception:
             pass
     return path
