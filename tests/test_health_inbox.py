@@ -119,6 +119,20 @@ class HealthInboxTests(unittest.TestCase):
                 self.assertEqual(report["hr_promedio_bpm"], 70.0)
                 self.assertGreater(report["pasos_hoy"], 0)
 
+    def test_fit_requires_fitparse_or_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("jarvis.health_inbox.DATA_DIR", root), patch(
+                "jarvis.smartwatch_processor.DATA_DIR", root
+            ):
+                drop = inbox_dir("gsuss") / "activity.fit"
+                drop.write_bytes(b"not-a-real-fit")
+                result = procesar_archivo_inbox("gsuss", drop)
+                # Without fitparse → error archived; with fitparse → parse error still archived
+                self.assertEqual(result["status"], "error")
+                self.assertFalse(drop.exists())
+                self.assertIn("fit", result.get("message", "").lower() + str(result.get("failed", "")).lower())
+
 
 if __name__ == "__main__":
     unittest.main()

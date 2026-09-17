@@ -312,10 +312,12 @@ def create_hud(state: AppState) -> FastAPI:
             hist_limit = int(request.query_params.get("history_limit") or 0)
         except ValueError:
             hist_limit = 0
+        hist_limit = max(0, min(hist_limit, 400))
         if hist_limit > 0 and payload.get("status") == "success":
             payload["history"] = await asyncio.to_thread(
                 load_metric_history, user.username, limit=hist_limit
             )
+            payload["history_limit"] = hist_limit
         return payload
 
     @app.get("/sync_qr.svg")
