@@ -333,17 +333,30 @@ def automation_curves() -> tuple[np.ndarray, np.ndarray]:
 def mix(stems: dict[str, np.ndarray], stem_dir: Path | None = None) -> np.ndarray:
     openness, trim = automation_curves()
 
+    # parallel crunch: distort only above the sub so the low end stays solid while the mids bite
+    kick_raw = stems.pop("kick")
+    crunch = process(
+        Pedalboard(
+            [
+                HighpassFilter(cutoff_frequency_hz=190.0),
+                Distortion(drive_db=24.0),
+                LowpassFilter(cutoff_frequency_hz=5200.0),
+                Compressor(threshold_db=-18.0, ratio=4.0, attack_ms=1.0, release_ms=45.0),
+            ]
+        ),
+        kick_raw,
+    )
     kick_bus = process(
         Pedalboard(
             [
                 Compressor(threshold_db=-10.0, ratio=3.4, attack_ms=5.0, release_ms=80.0),
-                PeakFilter(cutoff_frequency_hz=58.0, gain_db=2.4, q=0.9),
+                PeakFilter(cutoff_frequency_hz=58.0, gain_db=2.6, q=0.9),
                 PeakFilter(cutoff_frequency_hz=2800.0, gain_db=2.0, q=0.8),
-                Distortion(drive_db=3.0),
+                Distortion(drive_db=7.0),
                 HighpassFilter(cutoff_frequency_hz=30.0),
             ]
         ),
-        stems.pop("kick"),
+        kick_raw + crunch * 0.42,
     )
     gate = np.clip(smooth(envelope_follower(np.abs(kick_bus).mean(axis=0), 0.004, 0.09), 0.010), 0.0, 1.0)
     buses: dict[str, np.ndarray] = {"kick": kick_bus}
@@ -368,9 +381,9 @@ def mix(stems: dict[str, np.ndarray], stem_dir: Path | None = None) -> np.ndarra
         process(
             Pedalboard(
                 [
-                    HighpassFilter(cutoff_frequency_hz=38.0),
-                    Distortion(drive_db=9.0),
-                    LowpassFilter(cutoff_frequency_hz=2000.0),
+                HighpassFilter(cutoff_frequency_hz=38.0),
+                Distortion(drive_db=14.0),
+                LowpassFilter(cutoff_frequency_hz=2400.0),
                     Compressor(threshold_db=-16.0, ratio=5.0, attack_ms=6.0, release_ms=60.0),
                 ]
             ),
@@ -383,7 +396,7 @@ def mix(stems: dict[str, np.ndarray], stem_dir: Path | None = None) -> np.ndarra
         Pedalboard(
             [
                 HighpassFilter(cutoff_frequency_hz=140.0),
-                Distortion(drive_db=6.0),
+                Distortion(drive_db=10.0),
                 Delay(delay_seconds=arr.BEAT * 0.75, feedback=0.24, mix=0.2),
                 Reverb(room_size=0.5, damping=0.5, wet_level=0.18, dry_level=0.82, width=1.0),
                 Compressor(threshold_db=-18.0, ratio=3.0, attack_ms=5.0, release_ms=80.0),
@@ -592,7 +605,7 @@ def main() -> None:
     stems.update(render_synth_buses(use_cache=not fresh))
     print("mixing and mastering...")
     audio = mix(stems, stem_dir=HERE / "stems_hardtech")
-    out_wav = HERE / "hardtech_remix_152bpm.wav"
+    out_wav = HERE / f"hardtech_remix_{arr.BPM:.0f}bpm.wav"
     sf.write(out_wav, audio.T, SR, subtype="PCM_24")
     plot_overview(audio, HERE / "hardtech_overview.png")
     print(f"wrote {out_wav.name} ({audio.shape[1] / SR:.1f}s, {arr.BPM:.0f} BPM, 24-bit)")

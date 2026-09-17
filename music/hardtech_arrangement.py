@@ -8,7 +8,7 @@ import numpy as np
 
 from surge_synth import Note
 
-BPM = 152.0
+BPM = 160.0
 BEAT = 60.0 / BPM
 BAR = BEAT * 4.0
 BARS = 144

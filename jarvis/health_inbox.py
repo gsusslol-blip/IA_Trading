@@ -22,12 +22,14 @@ from typing import Any
 
 from jarvis.config import DATA_DIR, Settings, load_settings
 from jarvis.smartwatch_processor import (
+    append_metric_history,
     estimar_energia,
     metrics_path,
     importar_csv_basico,
+    importar_gpx_basico,
 )
 
-_WATCH_EXTS = {".json", ".csv"}
+_WATCH_EXTS = {".json", ".csv", ".gpx"}
 _lock = threading.Lock()
 _started = False
 
@@ -50,13 +52,14 @@ def ensure_inbox_readme(usuario: str) -> Path:
     readme.write_text(
         "ILARIA — Health Inbox\n"
         "=====================\n"
-        "Arrastrá acá exports de Garmin / Fitbit / Apple Health (CSV o JSON).\n"
+        "Arrastrá acá exports de Garmin / Fitbit / Apple Health (CSV, JSON o GPX).\n"
         "Ilaria los convierte a smartwatch_metrics.json en este workspace.\n"
         "Archivos procesados → inbox/processed/\n"
         "\n"
         "CSV sugerido (última fila): pasos,sueño,hr,hrv  (headers flexibles).\n"
-        "JSON sugerido: {\"pasos_hoy\":8000,\"horas_sueno_anoche\":7.0,"
-        "\"hr_promedio_bpm\":68,\"hrv_ms\":55}\n",
+        "JSON sugerido: {\"steps\":8000,\"sleep_hours\":7.0,\"avg_hr\":68,\"hrv\":55}\n"
+        "GPX: track points con HR en extensiones Garmin (avg HR + distancia).\n"
+        "FIT binario: exportá a CSV/JSON primero (sin parser FIT nativo).\n",
         encoding="utf-8",
     )
     return readme
@@ -135,6 +138,7 @@ def importar_json_inbox(usuario: str, json_path: Path) -> Path:
     payload["source_file"] = json_path.name
     out = metrics_path(usuario)
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    append_metric_history(usuario, payload)
     return out
 
 
@@ -152,8 +156,14 @@ def procesar_archivo_inbox(usuario: str, path: Path) -> dict[str, Any]:
         }
     source_name = path.name
     try:
+        if suffix == ".fit":
+            raise ValueError(
+                "FIT binario no soportado nativo. Exportá a CSV/JSON/GPX desde Garmin/Fitbit."
+            )
         if suffix == ".csv":
             dest = importar_csv_basico(usuario, path)
+        elif suffix == ".gpx":
+            dest = importar_gpx_basico(usuario, path)
         else:
             dest = importar_json_inbox(usuario, path)
         processed = inbox_dir(usuario) / "processed" / f"{int(time.time())}_{source_name}"

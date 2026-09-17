@@ -42,7 +42,12 @@ def section_ranges(wav_name: str) -> list[tuple[str, float, float]]:
 
 
 def main() -> None:
-    wav = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "hardtech_remix_152bpm.wav"
+    if len(sys.argv) > 1:
+        wav = Path(sys.argv[1])
+    else:
+        import hardtech_arrangement as latest
+
+        wav = HERE / f"hardtech_remix_{latest.BPM:.0f}bpm.wav"
     if not wav.is_absolute():
         wav = HERE / wav
     stem_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else HERE / ("stems_hardtech" if "hardtech" in wav.name else "stems")

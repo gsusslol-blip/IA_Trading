@@ -62,7 +62,7 @@ echo ===================================================
 echo     ILARIA EN: http://localhost:8787  (Python/FastAPI)
 echo     Telegram: polling dentro de main.py si hay TELEGRAM_BOT_TOKEN
 echo     Tunnel WAN: NGROK_AUTHTOKEN en .env (mismo proceso, no start /b)
-echo     Health inbox: data\users\USER\workspace\inbox\  (CSV/JSON)
+echo     Health inbox: data\users\USER\workspace\inbox\  (CSV/JSON/GPX)
 echo ===================================================
 echo.
 python main.py
