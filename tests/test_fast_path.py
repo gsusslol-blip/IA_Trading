@@ -27,6 +27,24 @@ class FastPathTests(unittest.TestCase):
         self.assertEqual(params.get("level"), 30)
         self.assertEqual(rule, "volume_level")
 
+    def test_volume_spoken_variants(self) -> None:
+        for phrase in (
+            "poné el volumen al 45",
+            "volumen a 20%",
+            "volumen al 50 por favor",
+            "hey ilaria, volumen al 35!",
+        ):
+            hit = match_fp(phrase)
+            self.assertIsNotNone(hit, phrase)
+            assert hit is not None
+            self.assertEqual(hit[0], "set_volume")
+            self.assertIn(hit[1].get("level"), {20, 35, 45, 50})
+
+    def test_mute_and_media(self) -> None:
+        self.assertEqual(match_fp("silenciá")[0], "media")  # type: ignore[index]
+        self.assertEqual(match_fp("siguiente")[0], "media")  # type: ignore[index]
+        self.assertEqual(match_fp("pause")[0], "media")  # type: ignore[index]
+
     def test_wake_prefix_stripped(self) -> None:
         hit = match_fp("hey ilaria volumen al 40")
         self.assertIsNotNone(hit)

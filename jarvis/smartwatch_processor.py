@@ -350,6 +350,88 @@ def importar_gpx_basico(usuario_activo: str, gpx_path: Path) -> Path:
     )
 
 
+def importar_fit_basico(usuario_activo: str, fit_path: Path) -> Path:
+    """Import Garmin/Fitbit .fit via optional ``fitparse`` (pip install fitparse)."""
+    fit_path = Path(fit_path)
+    if not fit_path.is_file():
+        raise FileNotFoundError(str(fit_path))
+    try:
+        from fitparse import FitFile  # type: ignore
+    except ImportError as exc:
+        raise ValueError(
+            "FIT requiere el paquete opcional fitparse. "
+            "Instalá: pip install fitparse  — o exportá CSV/JSON/GPX."
+        ) from exc
+
+    fit = FitFile(str(fit_path))
+    hrs: list[float] = []
+    steps = 0
+    sleep_hours = 0.0
+
+    for record in fit.get_messages("record"):
+        fields = {f.name: f.value for f in record if f.value is not None}
+        hr = fields.get("heart_rate")
+        if hr is not None:
+            try:
+                hrs.append(float(hr))
+            except (TypeError, ValueError):
+                pass
+
+    for msg in fit.get_messages("session"):
+        fields = {f.name: f.value for f in msg if f.value is not None}
+        for key in ("total_steps", "steps"):
+            if fields.get(key) is not None:
+                try:
+                    steps = max(steps, int(float(fields[key])))
+                except (TypeError, ValueError):
+                    pass
+        # Some exports put duration in seconds
+        dur = fields.get("total_timer_time") or fields.get("total_elapsed_time")
+        if dur is not None and not hrs:
+            try:
+                # Not sleep — ignore for energy unless we only have activity
+                float(dur)
+            except (TypeError, ValueError):
+                pass
+
+    for msg in fit.get_messages("monitoring"):
+        fields = {f.name: f.value for f in msg if f.value is not None}
+        if fields.get("steps") is not None:
+            try:
+                steps = max(steps, int(float(fields["steps"])))
+            except (TypeError, ValueError):
+                pass
+
+    # Sleep messages (Garmin)
+    for msg in fit.get_messages("sleep_level"):
+        pass  # structure varies; keep sleep default unless we find duration
+    for msg in fit.get_messages("sleep_assessment"):
+        fields = {f.name: f.value for f in msg if f.value is not None}
+        for key in ("total_sleep_time", "deep_sleep_time", "overall_sleep_score"):
+            if key == "total_sleep_time" and fields.get(key) is not None:
+                try:
+                    # often milliseconds or seconds — assume seconds if large
+                    val = float(fields[key])
+                    sleep_hours = val / 3600.0 if val > 24 else val
+                except (TypeError, ValueError):
+                    pass
+
+    if not hrs and steps <= 0 and sleep_hours <= 0:
+        raise ValueError("FIT sin HR/pasos/sueño usable")
+
+    hr_avg = sum(hrs) / len(hrs) if hrs else 70.0
+    sueno = sleep_hours if sleep_hours > 0 else 7.0
+    return escribir_metricas_demo(
+        usuario_activo,
+        pasos=int(steps),
+        sueno=float(sueno),
+        hr=float(hr_avg),
+        hrv=55.0,
+        source="health_inbox_fit",
+        source_file=fit_path.name,
+    )
+
+
 if __name__ == "__main__":
     import argparse
 

@@ -26,10 +26,11 @@ from jarvis.smartwatch_processor import (
     estimar_energia,
     metrics_path,
     importar_csv_basico,
+    importar_fit_basico,
     importar_gpx_basico,
 )
 
-_WATCH_EXTS = {".json", ".csv", ".gpx"}
+_WATCH_EXTS = {".json", ".csv", ".gpx", ".fit"}
 _lock = threading.Lock()
 _started = False
 
@@ -59,7 +60,7 @@ def ensure_inbox_readme(usuario: str) -> Path:
         "CSV sugerido (última fila): pasos,sueño,hr,hrv  (headers flexibles).\n"
         "JSON sugerido: {\"steps\":8000,\"sleep_hours\":7.0,\"avg_hr\":68,\"hrv\":55}\n"
         "GPX: track points con HR en extensiones Garmin (avg HR + distancia).\n"
-        "FIT binario: exportá a CSV/JSON primero (sin parser FIT nativo).\n",
+        "FIT: soportado si instalás fitparse (pip install fitparse).\n",
         encoding="utf-8",
     )
     return readme
@@ -156,19 +157,24 @@ def procesar_archivo_inbox(usuario: str, path: Path) -> dict[str, Any]:
         }
     source_name = path.name
     try:
-        if suffix == ".fit":
-            raise ValueError(
-                "FIT binario no soportado nativo. Exportá a CSV/JSON/GPX desde Garmin/Fitbit."
-            )
         if suffix == ".csv":
             dest = importar_csv_basico(usuario, path)
         elif suffix == ".gpx":
             dest = importar_gpx_basico(usuario, path)
+        elif suffix == ".fit":
+            dest = importar_fit_basico(usuario, path)
         else:
             dest = importar_json_inbox(usuario, path)
         processed = inbox_dir(usuario) / "processed" / f"{int(time.time())}_{source_name}"
         shutil.move(str(path), str(processed))
         print(f"[INBOX] {usuario}: {source_name} -> {dest.name}")
+        try:
+            if os.getenv("HA_FATIGUE_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}:
+                from jarvis.ha_fatigue import apply_fatigue_lights
+
+                apply_fatigue_lights(username=usuario, dry_run=False)
+        except Exception as ha_exc:  # noqa: BLE001
+            print(f"[HA-FATIGUE] post-inbox skip: {ha_exc}")
         return {
             "status": "success",
             "user": usuario,

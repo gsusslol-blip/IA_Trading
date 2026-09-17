@@ -429,6 +429,26 @@
       font-size: 15px;
       color: var(--text-main);
     }
+    .watch-panel .watch-range {
+      display: flex;
+      gap: 6px;
+      margin: 8px 0 6px;
+    }
+    .watch-panel .watch-range button {
+      flex: 1;
+      background: transparent;
+      border: 1px solid rgba(110, 231, 255, 0.28);
+      color: var(--mute, #7aa3ad);
+      font-size: 11px;
+      padding: 4px 0;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    .watch-panel .watch-range button.active {
+      border-color: rgba(110, 231, 255, 0.75);
+      color: #e8fbff;
+      background: rgba(110, 231, 255, 0.12);
+    }
     .watch-panel .spark-row {
       display: flex;
       align-items: center;
@@ -615,6 +635,10 @@
         <div class="watch-stats">
           <div class="watch-stat"><span>HR</span><strong id="metric-watch-hr">—</strong></div>
           <div class="watch-stat"><span>HRV</span><strong id="metric-watch-hrv">—</strong></div>
+        </div>
+        <div class="watch-range" role="group" aria-label="Ventana de historial">
+          <button type="button" data-watch-days="90" class="active" id="watch-range-90">90 d</button>
+          <button type="button" data-watch-days="365" id="watch-range-365">1 año</button>
         </div>
         <div class="spark-row"><span>HR</span><svg id="spark-hr" viewBox="0 0 120 28" preserveAspectRatio="none"></svg></div>
         <div class="spark-row"><span>HRV</span><svg id="spark-hrv" viewBox="0 0 120 28" preserveAspectRatio="none"></svg></div>
@@ -1294,11 +1318,32 @@
     }
     setInterval(pollAlerts, 4000);
 
+    let watchHistoryDays = 90;
+
+    function downsampleSeries(values, maxPoints) {
+      const nums = (values || []).filter((v) => Number.isFinite(v));
+      if (nums.length <= maxPoints) return nums;
+      const out = [];
+      const last = nums.length - 1;
+      for (let i = 0; i < maxPoints; i++) {
+        const start = Math.floor((i / maxPoints) * last);
+        const end = Math.floor(((i + 1) / maxPoints) * last);
+        let sum = 0;
+        let n = 0;
+        for (let j = start; j <= end; j++) {
+          sum += nums[j];
+          n += 1;
+        }
+        out.push(n ? sum / n : nums[start]);
+      }
+      return out;
+    }
+
     function drawSpark(svgId, values, color) {
       const svg = document.getElementById(svgId);
       if (!svg) return;
       const w = 120, h = 28, pad = 2;
-      const nums = (values || []).filter((v) => Number.isFinite(v));
+      const nums = downsampleSeries(values, 72);
       if (nums.length < 2) {
         svg.innerHTML = "";
         return;
@@ -1315,6 +1360,17 @@
         '<polyline fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" points="' +
         pts + '"></polyline>';
     }
+
+    document.querySelectorAll("[data-watch-days]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const days = Number(btn.getAttribute("data-watch-days") || 90);
+        watchHistoryDays = days === 365 ? 365 : 90;
+        document.querySelectorAll("[data-watch-days]").forEach((b) => {
+          b.classList.toggle("active", Number(b.getAttribute("data-watch-days")) === watchHistoryDays);
+        });
+        refreshMetrics();
+      });
+    });
 
     async function refreshMetrics() {
       const ollamaEl = document.getElementById("metric-ollama");
@@ -1390,7 +1446,8 @@
         if (ttsEl && stack.piper) ttsEl.textContent = "PIPER";
       } catch (e) {}
       try {
-        const watch = await fetch("/api/wellness/smartwatch").then((r) => r.json());
+        const watchUrl = "/api/wellness/smartwatch?history_limit=" + encodeURIComponent(String(watchHistoryDays));
+        const watch = await fetch(watchUrl).then((r) => r.json());
         const watchEl = document.getElementById("metric-watch");
         const hrEl = document.getElementById("metric-watch-hr");
         const hrvEl = document.getElementById("metric-watch-hrv");

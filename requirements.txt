@@ -23,3 +23,12 @@ pyautogui>=0.9.54
 pyngrok>=7.2.0
 # SVG QR for HUD → phone deep link (ilaria://sync):
 qrcode>=8.0
+# Optional Garmin/Fitbit .fit inbox import:
+#   pip install fitparse
+# fitparse>=1.2.0
+# Optional music pipeline (python -m music.process_track …); also needs ffmpeg on PATH:
+#   pip install librosa pydub soundfile numpy
+# librosa>=0.10.0
+# pydub>=0.25.1
+# soundfile>=0.12.0
+# numpy>=1.26.0
