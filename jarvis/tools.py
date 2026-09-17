@@ -6,6 +6,7 @@ import json
 import re
 from datetime import datetime
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
@@ -422,11 +423,18 @@ class _VisibleText(HTMLParser):
             self.parts.append(text)
 
 
-def _search(query: str, max_results: int = 5) -> str:
+def _search(query: str, max_results: int = 5, *, workspace: Path | None = None) -> str:
     """Bing-first live search (fast); DuckDuckGo fallback; one page extract if thin."""
+    from jarvis.search_cache import format_hit, lookup, store
+
     q = " ".join((query or "").split())
     if not q:
         return "Empty query."
+    cached = lookup(q, workspace, kind="web")
+    if cached:
+        print(f"[SEARCH_CACHE] hit score={cached.get('score')} for «{q[:60]}»")
+        return format_hit(cached)
+
     limit = max(1, min(int(max_results or 5), 8))
     collected: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -482,7 +490,9 @@ def _search(query: str, max_results: int = 5) -> str:
         except Exception as exc:  # noqa: BLE001
             lines.append(f"Page extract skipped: {exc}")
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    store(q, result, workspace, kind="web")
+    return result
 
 
 def _read_page(url: str) -> str:
@@ -565,13 +575,26 @@ def make_executor(
         if name == "list_capabilities":
             return actions.capabilities()
         if name == "web_search":
-            return _search(str(args.get("query", "")), int(args.get("max_results") or 5))
+            return _search(
+                str(args.get("query", "")),
+                int(args.get("max_results") or 5),
+                workspace=actions.workspace,
+            )
         if name in {"read_page", "open_url"}:
             return _read_page(str(args.get("url", "")))
         if name == "weather":
             return _weather(str(args.get("city", "")))
         if name == "wikipedia":
-            return actions.wikipedia(str(args.get("topic", "")))
+            topic = str(args.get("topic", ""))
+            from jarvis.search_cache import format_hit, lookup, store
+
+            cached = lookup(topic, actions.workspace, kind="wiki")
+            if cached:
+                print(f"[SEARCH_CACHE] wiki hit score={cached.get('score')}")
+                return format_hit(cached)
+            answer = actions.wikipedia(topic)
+            store(topic, answer, actions.workspace, kind="wiki")
+            return answer
         if name == "now":
             stamp = datetime.now(ZoneInfo(settings.timezone))
             return stamp.strftime("%Y-%m-%d %H:%M:%S %Z")
