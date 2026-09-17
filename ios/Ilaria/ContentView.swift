@@ -162,6 +162,18 @@ struct ProfileSheet: View {
                             }
                         }
                     }
+                    TextField("Bot Telegram (sin @)", text: $prefs.telegramBot)
+                        .textInputAutocapitalization(.never)
+                    Button("Desconectado: Actualizar URL Remota") {
+                        let bot = prefs.telegramBot.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+                        let encoded = "ILARIA_REQUEST_SYNC_URL".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+                        let link = bot.isEmpty ? "https://t.me/" : "https://t.me/\(bot)?text=\(encoded)"
+                        if let url = URL(string: link) {
+                            UIApplication.shared.open(url)
+                            info = "Pedí SYNC al bot y tocá ilaria://sync en la respuesta."
+                        }
+                    }
                     TextField("usuario", text: $user)
                         .textInputAutocapitalization(.never)
                     SecureField("clave", text: $pass)

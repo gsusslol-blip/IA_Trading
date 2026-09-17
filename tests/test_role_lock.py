@@ -22,9 +22,9 @@ from jarvis.personality import (
 class RoleLockTests(unittest.TestCase):
     def test_owner_card_allows_papa(self) -> None:
         card = sticky_role_card(is_owner=True, address_as="pá")
-        self.assertIn("Ilaria", card)
+        self.assertIn("ILARIA", card.upper())
         self.assertIn("pá", card.lower())
-        self.assertIn("6 años", card)
+        self.assertIn("F.R.I.D.A.Y", card.upper().replace(" ", ""))
 
     def test_member_card_forbids_daughter(self) -> None:
         card = sticky_role_card(is_owner=False, address_as="Luis")
@@ -66,7 +66,8 @@ class RoleLockTests(unittest.TestCase):
             stamp="2026-09-10",
             name="Ilaria",
         )
-        self.assertIn("nena de 6", prompt.lower())
+        self.assertIn("ilaria", prompt.lower())
+        self.assertIn("f.r.i.d.a.y", prompt.lower())
         self.assertIn("TRADING", prompt)
         self.assertIn("tierno", prompt.lower())
         self.assertLess(len(prompt), 2500)

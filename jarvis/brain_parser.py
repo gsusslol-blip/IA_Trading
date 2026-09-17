@@ -25,6 +25,9 @@ _TOOL_ALIASES: dict[str, str] = {
     "kitchen_action": "kitchen_recipe",
     "kitchen": "kitchen_recipe",
     "receta": "kitchen_recipe",
+    "wellness_action": "wellness_action",
+    "wellness": "wellness_action",
+    "bienestar": "wellness_action",
     "music_action": "music_action",
     "none": "",
     "noop": "",
@@ -132,12 +135,11 @@ def parse_and_execute(
         recipe_text = str(params.get("recipe_text") or params.get("receta_texto_completo") or "").strip() or None
         if execute and current_user:
             if action_type in {"listar", "list", "catalogo", "catálogo", "list_recipes"}:
-                log_to_diario(user, "Listó su catálogo de recetas.")
+                log_to_diario(user, "Consultó la lista general de recetas locales.")
                 from jarvis.kitchen_manager import listar_recetas_disponibles
 
                 raw = listar_recetas_disponibles(workspace)
             else:
-                log_to_diario(user, f"Consulta de receta procesada: {dish}")
                 from jarvis.kitchen_manager import buscar_o_generar_receta
 
                 raw = buscar_o_generar_receta(dish, workspace, llm_fallback_content=recipe_text, save=True)
@@ -145,6 +147,13 @@ def parse_and_execute(
                 payload = json.loads(raw)
             except json.JSONDecodeError:
                 payload = {"status": "error", "raw": raw}
+            if action_type not in {"listar", "list", "catalogo", "catálogo", "list_recipes"}:
+                if payload.get("status") == "success":
+                    log_to_diario(user, f"Visualizó la receta de: {dish}")
+                elif payload.get("status") == "not_found" or payload.get("trigger_llm_fallback"):
+                    log_to_diario(user, f"Buscó receta no registrada (fallback LLM): {dish}")
+                    payload["status"] = "trigger_llm_fallback"
+                    payload["comida"] = dish
             payload["tool"] = name
             payload["client"] = client_info
             payload["action"] = action_type
@@ -153,6 +162,78 @@ def parse_and_execute(
             "type": "kitchen",
             "action": action_type,
             "dish": dish,
+            "tool": name,
+            "params": params,
+            "client": client_info,
+        }
+
+    if name == "wellness_action":
+        action = str(params.get("action") or "consejo").strip().lower()
+        tema = str(
+            params.get("tipo_tema")
+            or params.get("tema")
+            or params.get("tipo_evento")
+            or "general"
+        ).strip()
+        notas = str(params.get("notas_registro") or params.get("notas") or "").strip()
+        if execute and current_user:
+            from jarvis.wellness_manager import (
+                consejo_placeholder,
+                obtener_resumen_bienestar,
+                registrar_evento_ciclo_o_sintoma,
+            )
+
+            if action in {"leer_reloj", "smartwatch", "reloj"} or tema.lower() in {
+                "smartwatch",
+                "reloj",
+                "wearable",
+            }:
+                from jarvis.smartwatch_processor import procesar_datos_smartwatch
+
+                log_to_diario(user, "Consultó las métricas de salud de su Smartwatch.")
+                try:
+                    payload = json.loads(procesar_datos_smartwatch(user))
+                except json.JSONDecodeError:
+                    payload = {"status": "error"}
+                payload["tool"] = name
+                payload["client"] = client_info
+                payload["action"] = "leer_reloj"
+                return payload
+            if action == "registrar":
+                raw = registrar_evento_ciclo_o_sintoma(user, tipo_evento=tema, notas=notas)
+                log_to_diario(user, f"Registró hito de bienestar ({tema}): {notas[:120]}")
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    payload = {"status": "error", "raw": raw}
+                payload["tool"] = name
+                payload["client"] = client_info
+                payload["action"] = action
+                return payload
+            if action == "resumen":
+                log_to_diario(user, "Consultó su resumen histórico de bienestar.")
+                try:
+                    payload = json.loads(obtener_resumen_bienestar(user))
+                except json.JSONDecodeError:
+                    payload = {"status": "error"}
+                payload["tool"] = name
+                payload["client"] = client_info
+                payload["action"] = action
+                return payload
+            # consejo → LLM free text with Safe-Disclaimer from system_core
+            log_to_diario(user, f"Solicitó asesoramiento/consejo sobre: {tema}")
+            try:
+                payload = json.loads(consejo_placeholder(tema))
+            except json.JSONDecodeError:
+                payload = {"status": "trigger_llm_free_text", "tema": tema}
+            payload["tool"] = name
+            payload["client"] = client_info
+            payload["action"] = action
+            return payload
+        return {
+            "type": "wellness",
+            "action": action,
+            "tema": tema,
             "tool": name,
             "params": params,
             "client": client_info,

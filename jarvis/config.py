@@ -151,7 +151,11 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    uid_raw = os.getenv("TELEGRAM_USER_ID", "").strip()
+    # TELEGRAM_ALLOWED_CHAT_ID is an alias for TELEGRAM_USER_ID (street channel lock).
+    uid_raw = (
+        os.getenv("TELEGRAM_USER_ID", "").strip()
+        or os.getenv("TELEGRAM_ALLOWED_CHAT_ID", "").strip()
+    )
     return Settings(
         groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),

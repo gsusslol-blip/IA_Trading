@@ -35,22 +35,42 @@ def generar_welcome_report_cotidiano(
     except Exception:
         now = datetime.now()
     yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = now.strftime("%Y-%m-%d")
+    diario_hoy = root / f"diario_{today}.txt"
     diario_ayer = root / f"diario_{yesterday}.txt"
 
-    pendientes: list[str] = []
-    if diario_ayer.is_file():
+    def _harvest(path: Path) -> list[str]:
+        if not path.is_file():
+            return []
         try:
-            lines = diario_ayer.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
-            lines = []
+            return []
+        hits: list[str] = []
         for line in lines:
             low = line.lower()
-            if any(k in low for k in ("nota", "recordatorio", "pendiente", "todo", "aviso")):
+            if any(
+                k in low
+                for k in (
+                    "nota remota",
+                    "nota",
+                    "recordatorio",
+                    "pendiente",
+                    "todo",
+                    "aviso",
+                )
+            ):
                 clean = line.strip()
                 if clean:
-                    pendientes.append(clean)
-        if not pendientes:
-            pendientes = [ln.strip() for ln in lines if ln.strip()][-3:]
+                    hits.append(clean)
+        if not hits:
+            hits = [ln.strip() for ln in lines if ln.strip()][-3:]
+        return hits
+
+    # Prefer today's street notes (Telegram), then yesterday's journal.
+    pendientes = _harvest(diario_hoy)
+    if not pendientes:
+        pendientes = _harvest(diario_ayer)
 
     hour = now.hour
     if hour < 12:
@@ -82,7 +102,17 @@ def generar_welcome_report_cotidiano(
         "recordatorios_ayer": pendientes[:3],
         "stack_alerts": stack_bits,
         "username": user,
+        "smartwatch": _smartwatch_snapshot(user),
     }
+
+
+def _smartwatch_snapshot(username: str) -> dict[str, Any]:
+    try:
+        from jarvis.smartwatch_processor import procesar_datos_smartwatch
+
+        return json.loads(procesar_datos_smartwatch(username))
+    except Exception:
+        return {"status": "no_data"}
 
 
 def format_welcome_voice(cotidiano: dict[str, Any], base_voice: str = "") -> str:

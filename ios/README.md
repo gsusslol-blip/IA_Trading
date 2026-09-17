@@ -29,6 +29,15 @@ La app manda `client: "ios"`; el backend encola `phone_actions` igual que Androi
 En **Perfil → Buscar PC en Wi‑Fi** la app manda UDP `ILARIA_IOS_DISCOVER` al puerto **8788**
 (misma LAN que Android). La PC responde `ILARIA_IOS_SERVER_ACK` + URL del HUD.
 
+### Red local (crítico en device/simulador)
+
+`Info.plist` ya declara:
+- `NSLocalNetworkUsageDescription` — iOS muestra el prompt de red local
+- `NSBonjourServices` → `_ilaria._udp` — desbloquea el diálogo en builds recientes
+
+Sin aceptar ese permiso, el broadcast UDP al 8788 no sale. En la consola de la PC tenés que ver:
+`[UDP LAN] Cliente iOS (SwiftUI) reconocido en 192.168.x.x`
+
 ## Límites de Apple
 
 - Volumen / bloqueo de pantalla: iOS no deja a apps de terceros (usa botones del sistema).

@@ -89,7 +89,7 @@ def start_discover(settings: Settings) -> None:
                     print(f"[UDP LAN] Android/Java ping ACK → {addr[0]}")
                 elif probe == "ILARIA_IOS_DISCOVER":
                     sock.sendto(ACK_IOS, addr)
-                    print(f"[UDP LAN] iOS discover ACK → {addr[0]}")
+                    print(f"[UDP LAN] Cliente iOS (SwiftUI) reconocido en {addr[0]}")
                 # Always send JSON URL reply for clients that parse MAGIC+url.
                 sock.sendto(build_reply(base), addr)
             except OSError:

@@ -365,6 +365,49 @@ class Actions:
             pass
         return result
 
+    def wellness_action(
+        self,
+        action: str = "consejo",
+        tipo_tema: str = "general",
+        notas_registro: str = "",
+    ) -> str:
+        """Private wellness register/summary; consejo returns LLM free-text hint."""
+        from jarvis.wellness_manager import (
+            consejo_placeholder,
+            obtener_resumen_bienestar,
+            registrar_evento_ciclo_o_sintoma,
+        )
+
+        kind = (action or "consejo").strip().lower()
+        user = self.workspace.parent.name if self.workspace.parent.name else "guest"
+        # Prefer username from workspace path: data/users/<user>/workspace
+        try:
+            parts = self.workspace.resolve().parts
+            if "users" in parts:
+                idx = parts.index("users")
+                if idx + 1 < len(parts):
+                    user = parts[idx + 1]
+        except Exception:
+            pass
+        if kind in {"leer_reloj", "smartwatch", "reloj"} or (tipo_tema or "").lower() in {
+            "smartwatch",
+            "reloj",
+            "wearable",
+        }:
+            from jarvis.smartwatch_processor import procesar_datos_smartwatch
+
+            return procesar_datos_smartwatch(user)
+        if kind == "registrar":
+            raw = registrar_evento_ciclo_o_sintoma(user, tipo_tema, notas_registro)
+            try:
+                self.daily_journal(f"Bienestar ({tipo_tema}): {(notas_registro or '')[:100]}")
+            except Exception:
+                pass
+            return raw
+        if kind == "resumen":
+            return obtener_resumen_bienestar(user)
+        return consejo_placeholder(tipo_tema)
+
     def music_action(self, action: str, **params: Any) -> str:
         from jarvis.music_day import ejecutar_comando_musical
 

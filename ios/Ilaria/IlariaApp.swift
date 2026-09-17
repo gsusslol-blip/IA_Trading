@@ -17,9 +17,15 @@ struct IlariaApp: App {
 
     private func handleDeepLink(_ url: URL) {
         guard url.scheme?.lowercased() == "ilaria" else { return }
-        // ilaria://connected?ip=192.168.x.x  or  ilaria://action?type=...
+        // ilaria://sync?url=https://….ngrok…  |  ilaria://connected?ip=…
         let host = (url.host ?? "").lowercased()
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        if host == "sync" {
+            if let remote = items.first(where: { $0.name == "url" })?.value, !remote.isEmpty {
+                prefs.baseUrl = Prefs.normalizeBase(remote)
+            }
+            return
+        }
         if host == "connected" || host == "lan" {
             if let ip = items.first(where: { $0.name == "ip" })?.value, !ip.isEmpty {
                 prefs.baseUrl = Prefs.normalizeBase(ip.contains("://") ? ip : "http://\(ip):8787")

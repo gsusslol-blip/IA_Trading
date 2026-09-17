@@ -19,3 +19,7 @@ pvrecorder>=1.2.0
 faster-whisper>=1.1.0
 # Optional Spotify desktop search box (gated by SPOTIFY_UI_CONTROL=1):
 pyautogui>=0.9.54
+# Optional WAN tunnel for phone off LAN (needs NGROK_AUTHTOKEN):
+pyngrok>=7.2.0
+# SVG QR for HUD → phone deep link (ilaria://sync):
+qrcode>=8.0

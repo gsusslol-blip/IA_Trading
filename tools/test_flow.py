@@ -69,10 +69,35 @@ def ejecutar_suite_test(mensaje: str, usuario: str, *, offline: bool = True) -> 
 
     print("\n[PASO 2] Simulando procesamiento del Cerebro...")
     lower = mensaje.lower()
-    if "receta" in lower or "cocinar" in lower or "milanesa" in lower or "tortilla" in lower:
+    if "reloj" in lower or "smartwatch" in lower or "pasos" in lower or "métricas" in lower or "metricas" in lower or "hrv" in lower:
+        mock_llm = (
+            '{"thought":"Consulta métricas del wearable","tool":"wellness_action",'
+            '"params":{"action":"leer_reloj","tipo_tema":"smartwatch"}}'
+        )
+    elif "período" in lower or "periodo" in lower or "entrenamiento" in lower or "dieta" in lower or "embarazo" in lower or "bienestar" in lower:
+        mock_llm = (
+            '{"thought":"Usuario reporta actualización física","tool":"wellness_action",'
+            '"params":{"action":"registrar","tipo_tema":"menstruacion",'
+            '"notas_registro":"Primer día del ciclo, dolores leves"}}'
+        )
+    elif "listá" in lower or "lista" in lower or "catálogo" in lower or "catalogo" in lower or (
+        "recetas" in lower and "milanesa" not in lower and "tortilla" not in lower
+    ):
+        mock_llm = (
+            '{"thought":"Gsuss quiere el índice culinario local","tool":"kitchen_action",'
+            '"params":{"action":"listar"}}'
+        )
+    elif "receta" in lower or "cocinar" in lower or "milanesa" in lower or "tortilla" in lower or "caruso" in lower or "lentejas" in lower:
+        dish = "milanesa"
+        if "caruso" in lower:
+            dish = "fideos_caruso"
+        elif "lentejas" in lower:
+            dish = "guiso_lentejas"
+        elif "tortilla" in lower:
+            dish = "tortilla"
         mock_llm = (
             '{"thought":"Buscando plato pedido","tool":"kitchen_action",'
-            '"params":{"comida":"milanesa","receta_texto_completo":null}}'
+            f'"params":{{"action":"buscar","comida":"{dish}","receta_texto_completo":null}}}}'
         )
     elif "remix" in lower or "musica" in lower or "música" in lower or "techno" in lower:
         mock_llm = (
@@ -112,10 +137,17 @@ def main() -> int:
     print("-" * 50)
 
     if not args.online:
-        ok = resultado.get("status") in {"success", "playing", "mixing_started"} or resultado.get("type") in {
+        ok = resultado.get("status") in {
+            "success",
+            "playing",
+            "mixing_started",
+            "trigger_llm_free_text",
+            "empty",
+        } or resultado.get("type") in {
             "action",
             "kitchen",
             "music",
+            "wellness",
             "speech",
         }
         # kitchen local_db returns status success

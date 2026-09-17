@@ -1,6 +1,7 @@
 package app.gsuss.asistente
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -73,11 +74,18 @@ class MainActivity : ComponentActivity() {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 41)
         }
         val prefs = Prefs(this)
+        RemoteSync.applyDeepLink(prefs, intent?.data)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Pink, background = Bg, surface = Bg)) {
                 AppRoot(prefs)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        RemoteSync.applyDeepLink(Prefs(this), intent.data)
     }
 }
 
@@ -260,16 +268,12 @@ private fun Welcome(prefs: Prefs, onIn: () -> Unit) {
 }
 
 private fun resolvePc(context: android.content.Context, prefs: Prefs): String {
-    val saved = prefs.baseUrl
-    if (saved.isNotBlank() && !prefs.looksLikeRouter(saved) && Brain.probe(saved)) {
-        return prefs.normalizeBase(saved)
-    }
-    val found = LanFind.find(context)
-        ?: throw IllegalStateException("No encuentro Ilaria. Wi-Fi en el celu (no 4G) y run.bat en la PC.")
-    if (!Brain.probe(found)) {
-        throw IllegalStateException("Encontré la PC pero el HUD no responde. Cerrá Ilaria y abrí run.bat de nuevo.")
-    }
-    return found
+    val hybrid = RemoteSync.resolveHybrid(context, prefs)
+    if (hybrid != null) return hybrid
+    throw IllegalStateException(
+        "Sin LAN ni URL remota viva. En Perfil: «Actualizar URL remota» (Telegram) " +
+            "o tocá el link ilaria://sync que te manda el bot.",
+    )
 }
 
 @Composable
@@ -583,6 +587,7 @@ private fun Profile(prefs: Prefs, notes: NotesCache, onBack: () -> Unit) {
             modifier = Modifier.padding(bottom = 8.dp),
         )
         Field("URL de la PC", host) { host = it }
+        Field("Bot Telegram (sin @)", prefs.telegramBot) { prefs.telegramBot = it }
         Field("Usuario PC", user) { user = it }
         Field("Contraseña PC", pass, password = true) { pass = it }
         if (creating) {
@@ -609,6 +614,27 @@ private fun Profile(prefs: Prefs, notes: NotesCache, onBack: () -> Unit) {
             colors = ButtonDefaults.buttonColors(containerColor = Pink, contentColor = Bg),
             modifier = Modifier.padding(top = 16.dp),
         ) { Text("Buscar PC") }
+        Button(
+            onClick = {
+                err = ""
+                ok = ""
+                scope.launch {
+                    val hybrid = withContext(Dispatchers.IO) { RemoteSync.resolveHybrid(context, prefs) }
+                    if (hybrid != null) {
+                        host = hybrid
+                        ok = "PC lista: $hybrid"
+                    } else {
+                        err = "Desconectado: actualizá la URL remota por Telegram."
+                        RemoteSync.openTelegramSync(context, prefs.telegramBot)
+                    }
+                }
+            },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFFFF5A6A),
+                contentColor = Color.White,
+            ),
+            modifier = Modifier.padding(top = 8.dp),
+        ) { Text("Desconectado: Actualizar URL Remota") }
         Button(
             onClick = {
                 creating = !creating
