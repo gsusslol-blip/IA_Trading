@@ -27,7 +27,11 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Ilaria escucha órdenes de voz cuando lo activás.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Ilaria se conecta a tu PC en la misma Wi‑Fi.</string>
+	<string>Ilaria necesita buscar tu PC en la red local (UDP 8788) para conectar el asistente en la misma Wi‑Fi.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_ilaria._udp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

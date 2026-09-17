@@ -266,6 +266,9 @@ def create_hud(state: AppState) -> FastAPI:
         from jarvis.tts_warmer import cache_snapshot
 
         warm = cache_snapshot()
+        from jarvis.tunnel_manager import hud_network_state
+
+        net = hud_network_state(state.settings)
         return {
             "ollama": bool(report.get("ollama_alive")),
             "piper": bool(report.get("piper_ready")),
@@ -283,8 +286,55 @@ def create_hud(state: AppState) -> FastAPI:
             "home_assistant": report.get("home_assistant"),
             "ram_load_pct": ram.get("ram_load_pct"),
             "ram_available_gb": ram.get("ram_available_gb"),
+            "network_mode": net.get("mode"),
+            "remote_url": net.get("remote_url"),
+            "remote_url_short": net.get("remote_url_short"),
+            "wan_url_display": net.get("wan_url_display"),
+            "wan_tunnel_active": bool(net.get("wan_tunnel_active")),
+            "sync_file_age_seconds": net.get("sync_file_age_seconds"),
+            "qr_ready": bool(net.get("qr_ready")),
             "version": __version__,
         }
+
+    @app.get("/api/wellness/smartwatch")
+    async def wellness_smartwatch(request: Request) -> dict[str, Any]:
+        """Sandbox smartwatch dump for HUD widgets (no cloud)."""
+        user = require_user(request)
+        from jarvis.smartwatch_processor import procesar_datos_smartwatch
+
+        raw = await asyncio.to_thread(procesar_datos_smartwatch, user.username)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"status": "error", "message": "Métricas ilegibles"}
+
+    @app.get("/sync_qr.svg")
+    async def sync_qr(request: Request) -> FileResponse:
+        """SVG deep-link QR for phone camera (session cookie from HUD)."""
+        require_user(request)
+        from jarvis.tunnel_manager import generar_qr_deep_link, qr_svg_path, read_sync_url
+
+        path = qr_svg_path()
+        if not path.is_file():
+            url = read_sync_url(state.settings)
+            if url:
+                await asyncio.to_thread(generar_qr_deep_link, url)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Túnel WAN / QR aún no disponible.")
+        return FileResponse(path, media_type="image/svg+xml", filename="sync_qr.svg")
+
+    @app.get("/api/kitchen/recipes")
+    async def kitchen_recipes(request: Request) -> dict[str, Any]:
+        """Offline catalog for HUD kitchen panel (no LLM)."""
+        user = require_user(request)
+        from jarvis.kitchen_manager import listar_recetas_disponibles
+
+        brain = state.brain_for(user)
+        raw = await asyncio.to_thread(listar_recetas_disponibles, brain.actions.workspace)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"status": "error", "message": "Catálogo ilegible"}
 
     @app.get("/api/android/update")
     async def android_meta() -> dict[str, object]:

@@ -1,4 +1,4 @@
-"""Telegram voice/text channel."""
+"""Telegram voice/text channel (polling inside runtime — street + full Brain)."""
 
 from __future__ import annotations
 
@@ -16,19 +16,21 @@ from telegram.ext import (
 
 from jarvis.brain import Brain
 from jarvis.config import Settings
+from jarvis.remote_bridge import handle_remote_text, is_authorized_chat, remote_username
 from jarvis.stt import transcribe_audio
 from jarvis.tts import speak_to_file
 
 
 def build_telegram_app(settings: Settings, brain: Brain) -> Application:
     application = Application.builder().token(settings.telegram_bot_token).build()
+    brain.actions.client_surface = "telegram"
 
     async def ensure_owner(update: Update) -> bool:
-        user = update.effective_user
-        if settings.telegram_user_id is None or user is None:
+        chat = update.effective_chat
+        chat_id = chat.id if chat is not None else None
+        if is_authorized_chat(chat_id, settings):
             return True
-        if user.id == settings.telegram_user_id:
-            return True
+        print(f"[ALERTA REMOTA] Intento de acceso no autorizado desde ID: {chat_id}")
         if update.message:
             await update.message.reply_text("Acceso restringido.")
         return False
@@ -37,20 +39,32 @@ def build_telegram_app(settings: Settings, brain: Brain) -> Application:
         if not await ensure_owner(update) or not update.message:
             return
         name = settings.assistant_name
+        who = remote_username(settings)
         if update.effective_chat is not None:
             brain.bus.set_telegram_chat(update.effective_chat.id)
         await update.message.reply_text(
-            f"{name} en línea. Escribime o mandame un audio.\n"
-            "Puedo buscar, abrir apps del PC, el navegador, mapas, un borrador de WhatsApp, "
-            "archivos, captura, volumen, recordatorios. Mail y luces si están configurados."
+            f"{name}: canal persistente en línea ({who}). "
+            "Escribime o mandame un audio.\n"
+            "Atajos de calle: «anotá …», «recordame …», «qué recetas tengo».\n"
+            "El resto lo procesa el cerebro local (client=telegram)."
         )
 
     async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await ensure_owner(update) or not update.message or not update.message.text:
             return
-        user_id = str(update.effective_user.id if update.effective_user else "anon")
+        if update.effective_chat is not None:
+            brain.bus.set_telegram_chat(update.effective_chat.id)
+        user_id = str(update.effective_user.id if update.effective_user else "telegram")
+        text = update.message.text
+        print(f"[REMOTO] Mensaje desde la calle: {text!r}")
         await update.message.chat.send_action("typing")
-        answer = await asyncio.to_thread(brain.reply, user_id, update.message.text)
+        answer = await asyncio.to_thread(
+            handle_remote_text,
+            text,
+            brain=brain,
+            settings=settings,
+            session_id=f"tg:{user_id}",
+        )
         await _send_answer(update, settings, answer)
 
     async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -61,7 +75,7 @@ def build_telegram_app(settings: Settings, brain: Brain) -> Application:
             return
         if not settings.has_stt:
             await update.message.reply_text(
-                "Para audio necesito GROQ_API_KEY u OPENAI_API_KEY. Mientras tanto, escribime."
+                "Para audio necesito Faster-Whisper o GROQ/OPENAI. Mientras, escribime."
             )
             return
         await update.message.chat.send_action("typing")
@@ -78,8 +92,15 @@ def build_telegram_app(settings: Settings, brain: Brain) -> Application:
         if not heard:
             await update.message.reply_text("No entendí el audio. Probá de nuevo.")
             return
-        user_id = str(update.effective_user.id if update.effective_user else "anon")
-        answer = await asyncio.to_thread(brain.reply, user_id, heard)
+        user_id = str(update.effective_user.id if update.effective_user else "telegram")
+        print(f"[REMOTO] Audio transcrito: {heard!r}")
+        answer = await asyncio.to_thread(
+            handle_remote_text,
+            heard,
+            brain=brain,
+            settings=settings,
+            session_id=f"tg:{user_id}",
+        )
         await _send_answer(update, settings, answer, heard=heard)
 
     application.add_handler(CommandHandler("start", start))
@@ -97,7 +118,21 @@ async def _send_answer(
     if not update.message:
         return
     header = f"Te escuché: {heard}\n\n" if heard else ""
-    body = header + answer
+    body = header + (answer or "").strip()
+    if not body:
+        body = "Listo."
+    # Street notes / recipe lists: text-only (faster, cheaper). Full Brain may TTS.
+    skip_tts = heard is None and (
+        body.startswith("Registrado en tu bitácora")
+        or body.startswith("TUS RECETAS")
+        or body.startswith("Todavía no hay recetas")
+        or body.startswith("Decime qué anoto")
+        or body.startswith("SYNC_ACK:")
+        or body.startswith("SYNC_ERR:")
+    )
+    if skip_tts:
+        await update.message.reply_text(body[:4000])
+        return
     try:
         audio_path = await speak_to_file(settings, answer)
         caption = body[:1024]

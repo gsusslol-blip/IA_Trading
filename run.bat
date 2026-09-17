@@ -60,6 +60,8 @@ if not exist .env copy .env.example .env
 echo.
 echo ===================================================
 echo     ILARIA EN: http://localhost:8787  (Python/FastAPI)
+echo     Telegram: polling dentro de main.py si hay TELEGRAM_BOT_TOKEN
+echo     Tunnel WAN: NGROK_AUTHTOKEN en .env (mismo proceso, no start /b)
 echo ===================================================
 echo.
 python main.py

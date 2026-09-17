@@ -76,6 +76,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("solo", false)
         set(value) { sp.edit().putBoolean("solo", value).apply() }
 
+    /** Telegram bot username without @ — used to open t.me for SYNC_ACK. */
+    var telegramBot: String
+        get() = sp.getString("tg_bot", "") ?: ""
+        set(value) { sp.edit().putString("tg_bot", value.trim().removePrefix("@")).apply() }
+
     val inSession: Boolean
         get() = solo || token.isNotBlank()
 

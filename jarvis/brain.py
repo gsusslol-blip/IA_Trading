@@ -128,6 +128,7 @@ class Brain:
             "play_music",
             "kitchen_recipe",
             "music_action",
+            "wellness_action",
             "screenshot",
             "power_control",
         }
@@ -151,6 +152,7 @@ class Brain:
             "play_music": f"Música: {str(args.get('query') or args.get('track') or '')[:80]}",
             "kitchen_recipe": f"Cocina: {str(args.get('dish') or args.get('comida') or '')[:80]}",
             "music_action": f"Música ({args.get('action')}): {str(args.get('track_name') or args.get('track_base') or '')[:60]}",
+            "wellness_action": f"Bienestar ({args.get('action')}): {str(args.get('tipo_tema') or '')[:60]}",
             "screenshot": "Captura de pantalla",
             "power_control": f"Power: {args.get('action')}",
         }.get(name)

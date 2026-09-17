@@ -22,6 +22,14 @@ final class Prefs: ObservableObject {
     @Published var solo: Bool {
         didSet { UserDefaults.standard.set(solo, forKey: "solo") }
     }
+    @Published var telegramBot: String {
+        didSet {
+            UserDefaults.standard.set(
+                telegramBot.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "@")),
+                forKey: "tg_bot"
+            )
+        }
+    }
 
     init() {
         let ud = UserDefaults.standard
@@ -31,6 +39,7 @@ final class Prefs: ObservableObject {
         displayName = ud.string(forKey: "display") ?? ""
         city = ud.string(forKey: "city") ?? ""
         solo = ud.bool(forKey: "solo")
+        telegramBot = ud.string(forKey: "tg_bot") ?? ""
     }
 
     var loggedIn: Bool { !token.isEmpty }

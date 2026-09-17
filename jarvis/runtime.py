@@ -97,16 +97,21 @@ async def run_backend(settings: Settings, state: AppState) -> None:
 
     telegram_send = None
     telegram = None
-    if settings.has_telegram and settings.has_llm:
+    # Street channel: polling inside this process (no second python in run.bat).
+    if settings.has_telegram:
+        from jarvis.remote_bridge import remote_workspace
         from jarvis.telegram_bot import build_telegram_app
 
         host_brain = Brain(settings, Memory(DATA_DIR / "host_memory.json"), EventBus())
+        host_brain.actions.client_surface = "telegram"
+        host_brain.actions.workspace = remote_workspace(settings=settings)
         telegram = build_telegram_app(settings, host_brain)
         await telegram.initialize()
         await telegram.start()
         if telegram.updater is None:
             raise SystemExit("Telegram updater failed to start.")
         await telegram.updater.start_polling(drop_pending_updates=True)
+        print("[REMOTO] Canal Telegram (polling) activo — atajos de calle + cerebro.")
         app = telegram
 
         async def telegram_send(text: str) -> None:
@@ -241,6 +246,12 @@ def main() -> None:
     worker.start()
     wait_health(settings.hud_port)
     start_discover(settings)
+    try:
+        from jarvis.tunnel_manager import start_tunnel_background
+
+        start_tunnel_background(settings)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[TUNNEL] skip: {exc}")
     try:
         from jarvis.tts_warmer import start_tts_warm
 

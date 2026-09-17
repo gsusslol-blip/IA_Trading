@@ -402,6 +402,30 @@
     .metric-row strong { color: var(--text-main); font-weight: 600; }
     .text-green { color: var(--ok) !important; }
     .text-warn { color: #ffb020 !important; }
+    .sync-panel {
+      text-align: center;
+    }
+    .sync-panel .qr-wrap {
+      display: inline-block;
+      background: #fff;
+      padding: 8px;
+      border-radius: 10px;
+      margin: 4px 0 8px;
+    }
+    .sync-panel .qr-wrap img {
+      width: 128px;
+      height: 128px;
+      display: block;
+    }
+    .sync-panel .url-text {
+      display: block;
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sync-panel.hidden { display: none; }
     #histBtn {
       display: none;
       position: fixed;
@@ -538,6 +562,9 @@
         <div class="metric-row"><span>Voz</span><strong id="metric-tts">—</strong></div>
         <div class="metric-row"><span>Caché TTS</span><strong id="metric-piper-cache">—</strong></div>
         <div class="metric-row"><span>LAN UDP</span><strong id="metric-lan">—</strong></div>
+        <div class="metric-row"><span>Red</span><strong id="metric-net-mode">—</strong></div>
+        <div class="metric-row"><span>WAN</span><strong id="metric-wan">—</strong></div>
+        <div class="metric-row"><span>Reloj</span><strong id="metric-watch">—</strong></div>
         <div class="metric-row"><span>Home Assistant</span><strong id="metric-ha">—</strong></div>
         <div class="metric-row"><span>RAM</span><strong id="metric-ram">—</strong></div>
         <div class="metric-row"><span>Latencia</span><strong id="metric-lat">—</strong></div>
@@ -547,6 +574,25 @@
         <h3>Dispositivo móvil</h3>
         <div class="metric-row"><span>Android min</span><strong id="metric-android">—</strong></div>
         <div class="metric-row"><span>Canal PC</span><span id="queue-count">local-first</span></div>
+      </div>
+      <div class="widget-box sync-panel" id="sync-panel">
+        <h3>WAN · sync móvil</h3>
+        <p style="margin:0 0 8px;font-size:12px;color:var(--text-muted)">
+          Escaneá con la cámara del celu (fuera del Wi‑Fi).
+        </p>
+        <div class="qr-wrap">
+          <img id="hud-qr" src="/sync_qr.svg" alt="Escanear para sincronizar" width="128" height="128" />
+        </div>
+        <span class="url-text" id="hud-tunnel-url">Sin túnel WAN</span>
+      </div>
+      <div class="widget-box kitchen-panel">
+        <h3>Recetario local</h3>
+        <button type="button" class="ghost-btn" id="kitchen-list-btn" style="width:100%;margin-bottom:8px">
+          Listar recetas
+        </button>
+        <div id="kitchen-display" style="max-height:120px;overflow:auto;font-size:12px;color:var(--text-muted)">
+          <span class="empty-text">Panel pasivo. Tocá listar o pedí «qué recetas tengo».</span>
+        </div>
       </div>
     </aside>
   </div>
@@ -1206,8 +1252,13 @@
       const verEl = document.getElementById("metric-version");
       const cacheEl = document.getElementById("metric-piper-cache");
       const lanEl = document.getElementById("metric-lan");
+      const netModeEl = document.getElementById("metric-net-mode");
+      const wanEl = document.getElementById("metric-wan");
       const haEl = document.getElementById("metric-ha");
       const ramEl = document.getElementById("metric-ram");
+      const tunnelUrlEl = document.getElementById("hud-tunnel-url");
+      const qrImg = document.getElementById("hud-qr");
+      const syncPanel = document.getElementById("sync-panel");
       try {
         const h = await fetch("/health").then((r) => r.json());
         if (portEl) portEl.textContent = "Activo";
@@ -1236,6 +1287,27 @@
             : "DOWN";
           lanEl.className = stack.udp_discover ? "text-green" : "text-warn";
         }
+        if (netModeEl) {
+          const mode = String(stack.network_mode || "lan").toUpperCase();
+          netModeEl.textContent = mode;
+          netModeEl.className = mode === "WAN" ? "text-green" : "text-warn";
+        }
+        if (wanEl) {
+          wanEl.textContent = stack.remote_url_short || "N/A";
+          wanEl.title = stack.remote_url || "";
+        }
+        if (tunnelUrlEl) {
+          tunnelUrlEl.textContent = stack.remote_url
+            ? stack.remote_url
+            : "Sin túnel (solo LAN / NGROK_AUTHTOKEN)";
+        }
+        if (qrImg && stack.qr_ready) {
+          qrImg.style.display = "block";
+          qrImg.src = "/sync_qr.svg?t=" + Date.now();
+          if (syncPanel) syncPanel.classList.remove("hidden");
+        } else if (qrImg && !stack.remote_url) {
+          qrImg.style.display = "none";
+        }
         if (haEl) {
           const ha = String(stack.home_assistant || "—");
           haEl.textContent = ha === "SUCCESS" ? "ONLINE" : (ha === "NOT_CONFIGURED" ? "N/C" : "OFF");
@@ -1245,6 +1317,21 @@
           ramEl.textContent = stack.ram_load_pct + "% (" + (stack.ram_available_gb || "?") + " GB libres)";
         }
         if (ttsEl && stack.piper) ttsEl.textContent = "PIPER";
+      } catch (e) {}
+      try {
+        const watch = await fetch("/api/wellness/smartwatch").then((r) => r.json());
+        const watchEl = document.getElementById("metric-watch");
+        if (watchEl) {
+          if (watch.status === "success") {
+            watchEl.textContent =
+              (watch.pasos_hoy || 0) + " pasos · " + String(watch.nivel_energia_estimado || "").split(".")[0];
+            watchEl.className = "text-green";
+            watchEl.title = watch.speech || "";
+          } else {
+            watchEl.textContent = "sin sync";
+            watchEl.className = "text-warn";
+          }
+        }
       } catch (e) {}
       try {
         const meta = await fetch("/api/meta").then((r) => r.json());
@@ -1267,6 +1354,34 @@
     }
     refreshMetrics();
     setInterval(refreshMetrics, 12000);
+
+    async function dispararListadoRecetas() {
+      const box = document.getElementById("kitchen-display");
+      if (box) box.innerHTML = "<span class='empty-text'>Cargando…</span>";
+      try {
+        const data = await fetch("/api/kitchen/recipes").then((r) => r.json());
+        const items = data.recetas || [];
+        if (!box) return;
+        if (!items.length) {
+          box.innerHTML = "<span class='empty-text'>Sin recetas en índice.</span>";
+          return;
+        }
+        box.innerHTML = items
+          .map(
+            (r) =>
+              "<div class='metric-row'><span>" +
+              (r.nombre || "?") +
+              "</span><strong>" +
+              (r.origen || r.tipo || "") +
+              "</strong></div>"
+          )
+          .join("");
+      } catch (e) {
+        if (box) box.innerHTML = "<span class='empty-text'>No pude cargar el catálogo.</span>";
+      }
+    }
+    const kitchenBtn = document.getElementById("kitchen-list-btn");
+    if (kitchenBtn) kitchenBtn.addEventListener("click", dispararListadoRecetas);
   </script>
 </body>
 </html>

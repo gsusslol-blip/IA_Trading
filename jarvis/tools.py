@@ -187,6 +187,29 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     ),
     _fn(
+        "wellness_action",
+        "Local wellness (training, nutrition, menstrual/pregnancy notes, smartwatch dump). "
+        "PRIVATE to the active user sandbox. "
+        "action=registrar → save event; resumen → last events; leer_reloj → "
+        "workspace/smartwatch_metrics.json (steps/sleep/HR/HRV); consejo → free-text advice "
+        "(must include health Safe-Disclaimer). Not a doctor — informational only.",
+        {
+            "action": {
+                "type": "string",
+                "description": "consejo | registrar | resumen | leer_reloj",
+            },
+            "tipo_tema": {
+                "type": "string",
+                "description": "nutricion | entrenamiento | menstruacion | embarazo | smartwatch | general",
+            },
+            "notas_registro": {
+                "type": "string",
+                "description": "Symptom / milestone notes when action=registrar",
+            },
+        },
+        ["action"],
+    ),
+    _fn(
         "music_action",
         "Everyday music: action=play_standard (opens YouTube/Spotify via play_music) "
         "or mix_tracks (Hardtech remix from workspace audio files). "
@@ -628,6 +651,12 @@ def make_executor(
                 str(args.get("dish") or args.get("comida") or ""),
                 str(args.get("recipe_text") or args.get("receta_texto_completo") or ""),
                 action=str(args.get("action") or "buscar"),
+            )
+        if name == "wellness_action":
+            return actions.wellness_action(
+                action=str(args.get("action") or "consejo"),
+                tipo_tema=str(args.get("tipo_tema") or args.get("tema") or "general"),
+                notas_registro=str(args.get("notas_registro") or args.get("notas") or ""),
             )
         if name == "music_action":
             action = str(args.get("action") or "").strip()
