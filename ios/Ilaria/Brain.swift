@@ -1,7 +1,7 @@
 import Foundation
 import UIKit
 
-/// Talks to the PC-hosted Ilaria FastAPI when linked. Solo mode uses PhoneLocal.
+/// Talks to the PC-hosted Ilaria FastAPI when linked. Solo / local commands use PhoneLocal first.
 @MainActor
 final class Brain {
     private let prefs: Prefs
@@ -31,14 +31,15 @@ final class Brain {
     }
 
     func chat(_ message: String) async throws -> ChatOut {
-        if prefs.token.isEmpty || prefs.solo {
-            if let local = PhoneLocal.handle(raw: message, prefs: prefs) {
-                return local
-            }
+        // Always prefer on-device routing for phone actions (parity with Android PhoneLocal).
+        if let local = PhoneLocal.handle(raw: message, prefs: prefs) {
+            return local
         }
-        guard !prefs.token.isEmpty, prefs.resolveUrl("/api/chat") != nil else {
-            return PhoneLocal.handle(raw: message, prefs: prefs)
-                ?? ChatOut(text: PhoneLocal.fallback(prefs: prefs, linked: false))
+        if prefs.token.isEmpty || prefs.solo {
+            return ChatOut(text: PhoneLocal.fallback(prefs: prefs, linked: false))
+        }
+        guard prefs.resolveUrl("/api/chat") != nil else {
+            return ChatOut(text: PhoneLocal.fallback(prefs: prefs, linked: false))
         }
         UIDevice.current.isBatteryMonitoringEnabled = true
         let battery = UIDevice.current.batteryLevel
@@ -47,9 +48,10 @@ final class Brain {
             "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0",
             "battery": battery >= 0 ? Int(battery * 100) : -1,
         ]
+        // speak:false — iOS uses AVSpeech locally; avoid unused Piper render on the PC.
         let body: [String: Any] = [
             "message": message,
-            "speak": true,
+            "speak": false,
             "client": "ios",
             "device": device,
             "pack": "",
@@ -81,6 +83,7 @@ final class Brain {
         if auth, !prefs.token.isEmpty {
             req.setValue("Bearer \(prefs.token)", forHTTPHeaderField: "Authorization")
             req.setValue("jarvis_sid=\(prefs.token)", forHTTPHeaderField: "Cookie")
+            req.setValue(prefs.token, forHTTPHeaderField: "X-Ilaria-Token")
         }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, resp) = try await session.data(for: req)

@@ -1,7 +1,10 @@
 package app.gsuss.asistente
 
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.os.Build
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -35,6 +38,13 @@ class Brain(private val prefs: Prefs) {
     @Volatile
     private var sseHttp = buildSse()
     private var player: MediaPlayer? = null
+    private var focusRequest: AudioFocusRequest? = null
+    private val audioManager: AudioManager?
+        get() = try {
+            prefs.appCtx.getSystemService(AudioManager::class.java)
+        } catch (_: Exception) {
+            null
+        }
 
     /** Drop keep-alive pools after clear_http maintenance from the PC. */
     fun rebuildClients() {
@@ -279,6 +289,48 @@ class Brain(private val prefs: Prefs) {
         }
         player?.release()
         player = null
+        abandonDuckFocus()
+    }
+
+    private fun requestDuckFocus() {
+        val mgr = audioManager ?: return
+        try {
+            if (Build.VERSION.SDK_INT >= 26) {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                    .setAudioAttributes(attrs)
+                    .setAcceptsDelayedFocusGain(false)
+                    .setWillPauseWhenDucked(false)
+                    .build()
+                focusRequest = req
+                mgr.requestAudioFocus(req)
+            } else {
+                @Suppress("DEPRECATION")
+                mgr.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK,
+                )
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun abandonDuckFocus() {
+        val mgr = audioManager ?: return
+        try {
+            if (Build.VERSION.SDK_INT >= 26) {
+                focusRequest?.let { mgr.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                mgr.abandonAudioFocus(null)
+            }
+        } catch (_: Exception) {
+        }
+        focusRequest = null
     }
 
     private fun playUrl(path: String) {
@@ -288,10 +340,12 @@ class Brain(private val prefs: Prefs) {
         val url = if ("?" in joined) "$joined&token=$tok" else "$joined?token=$tok"
         stopAudio()
         try {
+            requestDuckFocus()
             val next = MediaPlayer()
+            // SONIFICATION + MAY_DUCK: lower music briefly instead of pausing Spotify/YouTube.
             next.setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
             )
@@ -300,10 +354,12 @@ class Brain(private val prefs: Prefs) {
             next.setOnCompletionListener {
                 it.release()
                 if (player === it) player = null
+                abandonDuckFocus()
             }
             next.setOnErrorListener { mp, _, _ ->
                 mp.release()
                 if (player === mp) player = null
+                abandonDuckFocus()
                 true
             }
             player = next

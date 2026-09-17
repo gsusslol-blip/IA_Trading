@@ -19,3 +19,9 @@ android/local.properties
 *.ogg
 *.opus
 .DS_Store
+music/cache_*/
+music/separated/
+music/stems*/
+music/input/
+music/patch_previews/
+music/*.png

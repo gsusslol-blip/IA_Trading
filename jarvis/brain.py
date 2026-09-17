@@ -7,11 +7,11 @@ from collections import defaultdict
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Any
-from zoneinfo import ZoneInfo
-
 from pathlib import Path
 import re
+import time
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from jarvis.actions import Actions
 from jarvis.bus import EventBus
@@ -31,7 +31,7 @@ from jarvis.personality import (
     messages_with_lock,
 )
 from jarvis.security import redact_secrets, secret_values
-from jarvis.tools import TOOL_SCHEMAS, make_executor, schemas_for
+from jarvis.tools import PHONE_BLOCKED_TOOLS, make_executor, tools_for_surface
 
 MAX_HISTORY = 24
 MAX_TOOL_ROUNDS = 4
@@ -50,6 +50,21 @@ _ACTION_HINT = (
     r"deshac|undo|timer|record[aá]|avis[aá]|whatsapp|mapa|ruta|traduc|"
     r"portapapeles|clipboard|apag[aá]\s+la\s+pc|reinici[aá]\s+la\s+pc|bloque[aá]|"
     r"sub[ií].{0,12}volumen|baj[aá].{0,12}volumen|siguiente|anterior|escritorio|descargas)\b"
+)
+_FACT_HINT = (
+    r"\b(qu[eé]\s+es|qui[eé]n\s+(?:es|fue|era)\b(?!\s+m[aá]s)|cu[aá]ndo|d[oó]nde|por\s+qu[eé]|"
+    r"c[oó]mo\s+(?:se|funciona|hacer)|precio|cotiz|noticia|últim|ultimo|"
+    r"significa|definici[oó]n|explica|tell me|what is|who is|when was|how to)\b"
+    r"|\?$"
+)
+# Subjective taste — answer locally; do NOT force web_search (triggers provider 403/noise).
+_OPINION_HINT = (
+    r"\b(m[aá]s\s+linda|m[aá]s\s+lindo|m[aá]s\s+hermosa|m[aá]s\s+hermoso|m[aá]s\s+guap[oa]|"
+    r"m[aá]s\s+fea|m[aá]s\s+feo|qui[eé]n\s+es\s+m[aá]s|prefer[ií]s|te\s+gusta\s+m[aá]s|"
+    r"m[aá]s\s+bonit[oa]|mejor\s+parecida|m[aá]s\s+atractiv|"
+    r"qui[eé]n\s+es\s+mejor|qui[eé]n\s+mejor|mejor\s+entre|"
+    r"\bo\b.{0,40}\bqui[eé]n\s+(?:es\s+)?mejor|"
+    r"messi\s+o\s+cr7|cr7\s+o\s+messi|chaewon\s+o\s+kazuha)\b"
 )
 
 
@@ -86,10 +101,65 @@ class Brain:
         def execute(name: str, arguments_json: str) -> str:
             if self.allowed_tools is not None and name not in self.allowed_tools:
                 return "Permiso denegado: esa accion es solo del dueno."
+            surface = (getattr(self.actions, "client_surface", "hud") or "hud").strip().lower()
+            if surface in {"android", "ios", "iphone", "ipad"} and name in PHONE_BLOCKED_TOOLS:
+                return (
+                    "Eso es de la PC. Pedilo desde el HUD del escritorio, "
+                    "o usá una acción del celular."
+                )
             result = raw_execute(name, arguments_json)
+            self._maybe_auto_journal(name, arguments_json, result)
             return redact_secrets(result, extra=secret_values(self.settings))
 
         self.execute = execute
+
+    def _maybe_auto_journal(self, name: str, arguments_json: str, result: str) -> None:
+        """Append a short line to diario_YYYY-MM-DD.txt after important PC tools."""
+        journal_tools = {
+            "web_search",
+            "set_volume",
+            "open_app",
+            "daily_journal",
+            "note",
+            "set_reminder",
+            "set_timer",
+            "compose_whatsapp",
+            "mix_tracks",
+            "play_music",
+            "kitchen_recipe",
+            "music_action",
+            "screenshot",
+            "power_control",
+        }
+        if name not in journal_tools or name == "daily_journal":
+            return
+        if not result or result.lower().startswith(("permiso", "eso es de la pc", "unknown")):
+            return
+        try:
+            args = json.loads(arguments_json or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        summary = {
+            "web_search": f"Resumen: búsqueda «{str(args.get('query') or '')[:80]}»",
+            "set_volume": f"Volumen → {args.get('level')}",
+            "open_app": f"Abrió app «{args.get('name') or args.get('app') or ''}»",
+            "note": f"Nota: {str(args.get('text') or '')[:100]}",
+            "set_reminder": f"Recordatorio: {str(args.get('text') or '')[:80]}",
+            "set_timer": f"Timer {args.get('minutes')} min",
+            "compose_whatsapp": "Borrador WhatsApp abierto (sin envío silencioso)",
+            "mix_tracks": f"Remix Hardtech → {args.get('output_file') or 'remix_generado.mp3'}",
+            "play_music": f"Música: {str(args.get('query') or args.get('track') or '')[:80]}",
+            "kitchen_recipe": f"Cocina: {str(args.get('dish') or args.get('comida') or '')[:80]}",
+            "music_action": f"Música ({args.get('action')}): {str(args.get('track_name') or args.get('track_base') or '')[:60]}",
+            "screenshot": "Captura de pantalla",
+            "power_control": f"Power: {args.get('action')}",
+        }.get(name)
+        if not summary:
+            return
+        try:
+            self.actions.daily_journal(summary)
+        except Exception:
+            pass
 
     def _chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> Any:
         if self.endpoint.label == "groq":
@@ -297,6 +367,12 @@ class Brain:
 
         small = is_small_local_model(self.settings, self.endpoint.model)
         actionish = bool(re.search(_ACTION_HINT, text, re.I))
+        opinionish = bool(re.search(_OPINION_HINT, text, re.I))
+        factish = (
+            (not actionish)
+            and (not opinionish)
+            and bool(re.search(_FACT_HINT, text, re.I))
+        )
         cap = 6 if actionish else (10 if small else MAX_HISTORY)
         history[:] = history[-cap:]
 
@@ -336,7 +412,36 @@ class Brain:
                     ),
                 },
             )
-        tools = schemas_for(self.allowed_tools) if self.allowed_tools is not None else TOOL_SCHEMAS
+        elif factish:
+            messages.insert(
+                1,
+                {
+                    "role": "system",
+                    "content": (
+                        "RESEARCH: this looks like a public fact / news / how-to question. "
+                        "If you are not certain from memory, call web_search NOW (Bing-fast). "
+                        "If results are thin, read_page the best URL. "
+                        "Never say you don't know without searching first. "
+                        "Answer short in Rioplatense with sources implied, not invented."
+                    ),
+                },
+            )
+        elif opinionish:
+            messages.insert(
+                1,
+                {
+                    "role": "system",
+                    "content": (
+                        "OPINION: subjective taste (beauty, favorites, who is prettier). "
+                        "Do NOT call web_search. Answer briefly, playfully, without ranking people "
+                        "as objective truth. No tools needed."
+                    ),
+                },
+            )
+        tools = tools_for_surface(
+            self.allowed_tools,
+            getattr(self.actions, "client_surface", "hud"),
+        )
         # Small locals often ignore tools; still try a tool loop so PC actions can fire.
         if small:
             max_tokens = SMALL_MAX_TOKENS
@@ -346,24 +451,37 @@ class Brain:
             max_tokens = ACTION_MAX_TOKENS
             temperature = REASONING_TEMPERATURE
             tool_rounds = ACTION_TOOL_ROUNDS
+        elif factish:
+            max_tokens = ACTION_MAX_TOKENS
+            temperature = REASONING_TEMPERATURE
+            tool_rounds = 3  # search → maybe read_page → answer
+        elif opinionish:
+            # Opinions must not touch tools (avoids Groq tool_use_failed 400).
+            max_tokens = SMALL_MAX_TOKENS
+            temperature = 0.55
+            tool_rounds = 1
+            tools = []
         else:
             max_tokens = REASONING_MAX_TOKENS
             temperature = REASONING_TEMPERATURE
             tool_rounds = MAX_TOOL_ROUNDS
-        choice_mode: str | dict[str, Any] = "required" if actionish and not small else "auto"
+        choice_mode: str | dict[str, Any] = (
+            "required" if (actionish or factish) and not small else "auto"
+        )
 
         try:
             for _ in range(tool_rounds):
                 try:
-                    response = self._chat(
-                        messages,
-                        tools=tools,
-                        tool_choice=choice_mode,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                    )
+                    chat_kwargs: dict[str, Any] = {
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    }
+                    if tools:
+                        chat_kwargs["tools"] = tools
+                        chat_kwargs["tool_choice"] = choice_mode
+                    response = self._chat(messages, **chat_kwargs)
                 except Exception as exc:  # noqa: BLE001
-                    if choice_mode != "auto" and "tool_choice" in str(exc).lower():
+                    if choice_mode != "auto" and "tool_choice" in str(exc).lower() and tools:
                         choice_mode = "auto"
                         response = self._chat(
                             messages,
@@ -372,7 +490,7 @@ class Brain:
                             temperature=temperature,
                             max_tokens=max_tokens,
                         )
-                    elif is_tools_unsupported(exc):
+                    elif is_tools_unsupported(exc) or (not tools and "tool" in str(exc).lower()):
                         raw_parts = []
                         for piece in self._iter_tokens(
                             messages, temperature=temperature, max_tokens=max_tokens
@@ -389,7 +507,7 @@ class Brain:
                         raise
                 choice = response.choices[0].message
                 tool_calls = choice.tool_calls or []
-                if not tool_calls and actionish and choice_mode == "required":
+                if not tool_calls and (actionish or factish) and choice_mode == "required":
                     # Provider accepted required but returned empty — nudge once then loosen.
                     choice_mode = "auto"
                     messages.append(
@@ -397,6 +515,11 @@ class Brain:
                             "role": "user",
                             "content": (
                                 "No llamaste ninguna tool. Ejecutá YA la acción pedida con la tool correcta."
+                                if actionish
+                                else (
+                                    "No buscaste. Llamá web_search YA con la pregunta "
+                                    "(o wikipedia/read_page si encaja). No digas que no sabés sin buscar."
+                                )
                             ),
                         }
                     )
@@ -414,6 +537,39 @@ class Brain:
                     continue
                 if not tool_calls:
                     raw = choice.content or ""
+                    # Fallback: model returned a ReAct JSON blob instead of tool_calls
+                    from jarvis.brain_parser import try_parse_tool_blob
+
+                    parsed = try_parse_tool_blob(raw)
+                    if parsed:
+                        tool_name, tool_params = parsed
+                        fake_id = f"json-{time.time_ns()}"
+                        result = self.execute(tool_name, json.dumps(tool_params, ensure_ascii=False))
+                        assistant_msg = {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": fake_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_name,
+                                        "arguments": json.dumps(tool_params, ensure_ascii=False),
+                                    },
+                                }
+                            ],
+                        }
+                        messages.append(assistant_msg)
+                        history.append(assistant_msg)
+                        tool_msg = {
+                            "role": "tool",
+                            "tool_call_id": fake_id,
+                            "content": result[:12000],
+                        }
+                        messages.append(tool_msg)
+                        history.append(tool_msg)
+                        choice_mode = "auto"
+                        continue
                     if raw:
                         yield redact_secrets(raw, extra=secret_values(self.settings))
                     answer = self._finish(raw)
@@ -472,7 +628,13 @@ class Brain:
             heal = on_llm_exception(self.settings, exc)
             hint = owner_hint(heal) if self.is_owner else ""
             if is_missing_model_error(exc) or _is_soft_llm_failure(exc):
-                answer = self._finish(self._local_answer(text))
+                if _is_moderation_block(exc):
+                    answer = self._finish(
+                        "Eso es gusto personal: no hay una verdad objetiva ahí. "
+                        "Decime con qué criterio lo ves vos y lo charlamos en joda, sin pelear."
+                    )
+                else:
+                    answer = self._finish(self._local_answer(text))
                 if hint:
                     answer = f"{answer}\n{hint}"
                 self._store(session_id, answer)
@@ -482,6 +644,17 @@ class Brain:
                 str(exc).strip() or exc.__class__.__name__,
                 extra=secret_values(self.settings),
             )
+            # Groq/OpenAI sometimes return bare 403 without soft markers — still recover.
+            if _is_moderation_block(exc) or "403" in detail:
+                answer = self._finish(
+                    "El proveedor del cerebro rechazó ese turno (filtro). "
+                    "Reformulá sin comparar personas y seguimos."
+                )
+                if hint:
+                    answer = f"{answer}\n{hint}"
+                self._store(session_id, answer)
+                yield answer
+                return
             if self.is_owner:
                 who = (self.settings.user_name or "").strip() or "pá"
                 answer = f"{who}, se me trabó el cerebro local: {detail}"
@@ -556,5 +729,29 @@ def _is_soft_llm_failure(exc: BaseException) -> bool:
         "connection",
         "temporarily unavailable",
         "overloaded",
+        "403",
+        "moderation",
+        "content_filter",
+        "content policy",
+        "content_policy",
+        "refused",
+        "unsafe",
     )
     return any(item in text for item in needles)
+
+
+def _is_moderation_block(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(
+        item in text
+        for item in (
+            "403",
+            "moderation",
+            "content_filter",
+            "content policy",
+            "content_policy",
+            "refused",
+            "unsafe",
+            "violat",
+        )
+    )

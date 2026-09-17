@@ -17,6 +17,11 @@ from jarvis.actions import Actions
 from jarvis.config import Settings
 from jarvis.memory import Memory
 
+# Prefer Bing: in practice the fastest DDGS backend here; DDG is the fallback.
+_SEARCH_PRIMARY = "bing"
+_SEARCH_FALLBACK = "duckduckgo"
+_SEARCH_TIMEOUT_S = 4.0
+
 
 def _fn(
     name: str,
@@ -41,7 +46,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     ),
     _fn(
         "web_search",
-        "Search the live internet for news, facts, prices, people, how-to.",
+        "Search the live internet FAST via Bing (DuckDuckGo fallback). "
+        "Use for news, facts, prices, people, how-to — whenever you are unsure about a public fact. "
+        "Not for subjective taste/opinion (who is prettier, favorites).",
         {
             "query": {"type": "string"},
             "max_results": {"type": "integer", "default": 5},
@@ -154,6 +161,57 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "List files in THIS user's workspace (data/users/<username>/workspace). "
         "Optional relative subfolder. Prefer for 'qué hay en el workspace / archivos'.",
         {"relative": {"type": "string"}},
+    ),
+    _fn(
+        "analyze_workspace",
+        "JSON telemetry of THIS user's workspace: file counts, today's diario present, "
+        "sample filenames. Use before mix_tracks or when asked what is in the workspace.",
+        {},
+    ),
+    _fn(
+        "kitchen_recipe",
+        "Local kitchen assistant (alias kitchen_action). "
+        "action=listar → catalog of local index + workspace receta_*.txt. "
+        "action=buscar (default) → lookup dish; if not found, generate short recipe and "
+        "call again with recipe_text to save as receta_<dish>.txt. No web_search unless asked.",
+        {
+            "action": {
+                "type": "string",
+                "description": "buscar | listar (default buscar)",
+            },
+            "dish": {"type": "string", "description": "Food / dish name (when buscar)"},
+            "recipe_text": {
+                "type": "string",
+                "description": "Full recipe text when saving an LLM-authored recipe",
+            },
+        },
+    ),
+    _fn(
+        "music_action",
+        "Everyday music: action=play_standard (opens YouTube/Spotify via play_music) "
+        "or mix_tracks (Hardtech remix from workspace audio files). "
+        "play params: track_name, optional platform. "
+        "mix params: track_base, track_overlay, target_bpm (default 142).",
+        {
+            "action": {"type": "string", "description": "play_standard | mix_tracks"},
+            "track_name": {"type": "string"},
+            "platform": {"type": "string"},
+            "track_base": {"type": "string"},
+            "track_overlay": {"type": "string"},
+            "target_bpm": {"type": "number"},
+            "output_file": {"type": "string"},
+        },
+        ["action"],
+    ),
+    _fn(
+        "purge_tts_cache",
+        "Delete Piper phrase-cache WAV/MP3 older than N days (default 7). Owner maintenance.",
+        {"days": {"type": "number", "description": "Age limit in days (default 7)"}},
+    ),
+    _fn(
+        "backup_notes",
+        "Zip synced notes (memory notes + optional notes/ folder) into workspace/backup_notes_*.zip.",
+        {},
     ),
     _fn(
         "read_file",
@@ -302,6 +360,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "and whether UDP discover port 8788 is bound.",
         {},
     ),
+    _fn(
+        "mix_tracks",
+        "Hardtech BPM remix: overlay two audio files from the user workspace via "
+        "music/music_remixer.py (librosa+pydub). Owner/PC only. "
+        "base_file and overlay_file are filenames inside the workspace. "
+        "bpm_target default 140. Writes remix_generado.mp3 (or output_file).",
+        {
+            "base_file": {"type": "string", "description": "Base track filename in workspace"},
+            "overlay_file": {"type": "string", "description": "Overlay/vocals filename in workspace"},
+            "bpm_target": {"type": "number", "description": "Target BPM (default 140)"},
+            "output_file": {"type": "string", "description": "Optional output filename"},
+        },
+        ["base_file", "overlay_file"],
+    ),
 ]
 
 
@@ -328,21 +400,65 @@ class _VisibleText(HTMLParser):
 
 
 def _search(query: str, max_results: int = 5) -> str:
+    """Bing-first live search (fast); DuckDuckGo fallback; one page extract if thin."""
+    q = " ".join((query or "").split())
+    if not q:
+        return "Empty query."
     limit = max(1, min(int(max_results or 5), 8))
-    rows: list[dict[str, Any]] = []
-    try:
-        found = DDGS().text(query, max_results=limit)
-        rows.extend(list(found or []))
-    except Exception as exc:  # noqa: BLE001
-        return f"Search failed: {exc}"
-    if not rows:
-        return "No results."
-    lines = []
-    for item in rows:
-        title = item.get("title") or ""
-        href = item.get("href") or ""
-        body = item.get("body") or ""
-        lines.append(f"- {title}\n  {href}\n  {body}")
+    collected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    errors: list[str] = []
+    engine_used = ""
+
+    def _take(rows: list[dict[str, Any]] | None, engine: str) -> None:
+        for item in rows or []:
+            href = str(item.get("href") or item.get("url") or "").strip()
+            title = str(item.get("title") or "").strip()
+            body = str(item.get("body") or item.get("snippet") or "").strip()
+            key = (href.split("?")[0].lower() if href else "") or title[:48].lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            collected.append({"title": title, "href": href, "body": body, "engine": engine})
+
+    def _engine(backend: str) -> tuple[str, list[dict[str, Any]], str]:
+        try:
+            rows = DDGS(timeout=int(_SEARCH_TIMEOUT_S)).text(
+                q, max_results=limit, backend=backend
+            )
+            return backend, list(rows or []), ""
+        except Exception as exc:  # noqa: BLE001
+            return backend, [], f"{backend}: {exc}"
+
+    for backend in (_SEARCH_PRIMARY, _SEARCH_FALLBACK):
+        eng, rows, err = _engine(backend)
+        if err:
+            errors.append(err)
+        if rows:
+            engine_used = eng
+            _take(rows, eng)
+            break
+
+    if not collected:
+        detail = "; ".join(errors[:2]) if errors else "sin detalle"
+        return f"No results. ({detail})"
+
+    collected = collected[:limit]
+    lines = [f"Source: {engine_used} ({len(collected)} hits)."]
+    for item in collected:
+        lines.append(f"- {item['title']}\n  {item['href']}\n  {item['body']}")
+
+    # One top page only when snippets are thin — keeps latency down.
+    thin = sum(1 for item in collected if len(item.get("body") or "") < 60)
+    top = next((item["href"] for item in collected if item.get("href")), "")
+    if thin and top:
+        try:
+            text = _read_page(top)
+            if text and not text.startswith(("Fetch failed", "Invalid", "Empty", "Blocked")):
+                lines.append(f"\n--- Top page extract ---\nPage extract ({top}):\n{text[:1600]}")
+        except Exception as exc:  # noqa: BLE001
+            lines.append(f"Page extract skipped: {exc}")
+
     return "\n".join(lines)
 
 
@@ -350,10 +466,12 @@ def _read_page(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return "Invalid URL."
-    headers = {"User-Agent": "Ilaria/1.3 personal-assistant"}
+    headers = {"User-Agent": "Ilaria/1.5 personal-assistant"}
     try:
-        with httpx.Client(timeout=20.0, follow_redirects=True, headers=headers) as client:
+        with httpx.Client(timeout=12.0, follow_redirects=True, headers=headers) as client:
             response = client.get(url)
+            if response.status_code in {401, 403, 429}:
+                return f"Blocked ({response.status_code}): the site refused the fetch. Use another result."
             response.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         return f"Fetch failed: {exc}"
@@ -448,6 +566,27 @@ def make_executor(
             return actions.set_volume(level)
         if name == "undo_last":
             return actions.undo_last()
+        if name == "mix_tracks":
+            from jarvis.music_bridge import run_hardtech_remix
+
+            if not getattr(actions, "is_owner", False):
+                return "Remix Hardtech solo lo puede disparar el dueño desde la PC."
+            surface = (getattr(actions, "client_surface", "hud") or "hud").strip().lower()
+            if surface in {"android", "ios", "iphone", "ipad"}:
+                return "El remix se hace en la PC, no desde el celular."
+            bpm = args.get("bpm_target")
+            try:
+                bpm_f = float(bpm) if bpm is not None else 140.0
+            except (TypeError, ValueError):
+                bpm_f = 140.0
+            out_name = str(args.get("output_file") or "remix_generado.mp3").strip() or "remix_generado.mp3"
+            return run_hardtech_remix(
+                track_base=str(args.get("base_file") or ""),
+                track_overlay=str(args.get("overlay_file") or ""),
+                output=out_name,
+                bpm_target=bpm_f,
+                workspace=actions.workspace,
+            )
         if name == "calculate":
             return actions.calculate(str(args.get("expression", "")))
         if name == "remember":
@@ -482,6 +621,26 @@ def make_executor(
             return actions.open_folder(str(args.get("name", "")))
         if name == "list_files":
             return actions.list_files(str(args.get("relative", "") or ""))
+        if name == "analyze_workspace":
+            return actions.analyze_workspace()
+        if name == "kitchen_recipe":
+            return actions.kitchen_recipe(
+                str(args.get("dish") or args.get("comida") or ""),
+                str(args.get("recipe_text") or args.get("receta_texto_completo") or ""),
+                action=str(args.get("action") or "buscar"),
+            )
+        if name == "music_action":
+            action = str(args.get("action") or "").strip()
+            params = {k: v for k, v in args.items() if k != "action"}
+            return actions.music_action(action, **params)
+        if name == "purge_tts_cache":
+            try:
+                days = int(float(args.get("days") or 7))
+            except (TypeError, ValueError):
+                days = 7
+            return actions.purge_tts_cache(days)
+        if name == "backup_notes":
+            return actions.backup_notes()
         if name == "read_file":
             return actions.read_file(str(args.get("relative", "")))
         if name == "write_file":
@@ -575,7 +734,7 @@ def _tool_name(schema: dict[str, Any]) -> str:
 
 ALL_TOOL_NAMES = {_tool_name(item) for item in TOOL_SCHEMAS}
 # Owner-only even when members_pc_hands is enabled.
-OWNER_ONLY_TOOLS = {"power_control", "relaunch_service"}
+OWNER_ONLY_TOOLS = {"power_control", "relaunch_service", "mix_tracks", "purge_tts_cache"}
 PC_TOOLS = {
     "open_app",
     "open_folder",
@@ -592,9 +751,32 @@ PC_TOOLS = {
     "get_clipboard",
     "power_control",
     "relaunch_service",
+    "mix_tracks",
+    "purge_tts_cache",
+    "backup_notes",
+}
+# webbrowser / PC shell openers — never expose these on phone surfaces
+PHONE_BLOCKED_TOOLS = PC_TOOLS | {
+    "open_browser",
+    "google",
+    "open_maps",
+    "system_status",
+    "list_files",
+    "read_file",
+    "control_device",
+    "get_system_health",
+    "check_lan_status",
 }
 MEMBER_TOOLS = ALL_TOOL_NAMES - PC_TOOLS
 
 
 def schemas_for(allowed: set[str]) -> list[dict[str, Any]]:
     return [item for item in TOOL_SCHEMAS if _tool_name(item) in allowed]
+
+
+def tools_for_surface(allowed: set[str] | None, surface: str) -> list[dict[str, Any]]:
+    """Filter tool schemas so phone sessions cannot trigger PC-side openers."""
+    base = set(ALL_TOOL_NAMES) if allowed is None else set(allowed)
+    if (surface or "hud").strip().lower() in {"android", "ios", "iphone", "ipad"}:
+        base -= PHONE_BLOCKED_TOOLS
+    return schemas_for(base)

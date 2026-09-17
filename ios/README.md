@@ -26,6 +26,9 @@ Sin XcodeGen: en Xcode → *File → New → Project → App*, bundle `app.gsuss
 
 La app manda `client: "ios"`; el backend encola `phone_actions` igual que Android.
 
+En **Perfil → Buscar PC en Wi‑Fi** la app manda UDP `ILARIA_IOS_DISCOVER` al puerto **8788**
+(misma LAN que Android). La PC responde `ILARIA_IOS_SERVER_ACK` + URL del HUD.
+
 ## Límites de Apple
 
 - Volumen / bloqueo de pantalla: iOS no deja a apps de terceros (usa botones del sistema).

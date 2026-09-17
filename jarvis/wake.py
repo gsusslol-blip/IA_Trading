@@ -233,8 +233,4 @@ def _announce(brain, text: str) -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"[-] Wake TTS: {exc}")
     brain.bus.push(text, audio_url=audio_url)
-    if path is not None and path.is_file():
-        try:
-            os.startfile(str(path))  # type: ignore[attr-defined]
-        except Exception:
-            pass
+    # Never os.startfile here: Windows Media Player / default app steals focus and pauses Spotify.

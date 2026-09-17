@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from jarvis.discover import MAGIC, build_reply, parse_reply
+from jarvis.discover import ACK_SIMPLE, MAGIC, build_reply, parse_reply
 
 
 class DiscoverTests(unittest.TestCase):
@@ -23,6 +23,12 @@ class DiscoverTests(unittest.TestCase):
         self.assertIsNone(parse_reply(b"hello"))
         self.assertIsNone(parse_reply(MAGIC + b"{bad"))
 
+    def test_simple_ack_constant(self) -> None:
+        self.assertEqual(ACK_SIMPLE, b"ILARIA_SERVER_ACK")
+        from jarvis.discover import ACK_IOS, PROBE_IOS
+
+        self.assertEqual(ACK_IOS, b"ILARIA_IOS_SERVER_ACK")
+        self.assertEqual(PROBE_IOS, b"ILARIA_IOS_DISCOVER")
 
 if __name__ == "__main__":
     unittest.main()

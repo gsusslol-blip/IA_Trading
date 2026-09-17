@@ -204,11 +204,15 @@ def try_local_command(
         return run("media", action="vol_down")
 
     if re.search(r"\b(silenci(?:ar|[oaá])|mute(?:ar)?|sin\s+sonido)\b", lower):
+        if android:
+            return run("phone_hands", action="volume", target="mute")
         return run("media", action="mute")
     if re.search(
         r"\b(desilenci|unmute|con\s+sonido|sac[aá]\s+el\s+silencio|quit[aá]\s+el\s+silencio)\b",
         lower,
     ):
+        if android:
+            return run("phone_hands", action="volume", target="unmute")
         return run("media", action="mute")
 
     if re.fullmatch(r"(escritorio|desktop)", lower):
@@ -226,6 +230,12 @@ def try_local_command(
 
     media_key = _media_key(lower)
     if media_key:
+        if android:
+            # Phone: map media keys to music / open Spotify when possible.
+            if media_key in {"play_pause", "next", "prev", "stop"}:
+                return run("phone_hands", action="music", target="")
+            if media_key == "mute":
+                return run("phone_hands", action="volume", target="mute")
         return run("media", action=media_key)
 
     if re.search(
@@ -318,6 +328,44 @@ def try_local_command(
         if android:
             return run("phone_hands", action="whatsapp", target=wa[0], text=wa[1])
         return run("compose_whatsapp", phone=wa[0], text=wa[1])
+
+    if re.search(
+        r"\b(qu[eé]\s+recetas|list[aá]\s+(?:mis\s+)?recetas|cat[aá]logo\s+de\s+recetas|"
+        r"recetas\s+disponibles|qu[eé]\s+sab[eé]s\s+cocinar)\b",
+        lower,
+    ):
+        out = run("kitchen_recipe", action="listar", dish="")
+        try:
+            data = json.loads(out)
+            if data.get("speakable"):
+                return str(data["speakable"])
+        except Exception:
+            pass
+        return out
+
+    recipe = re.search(
+        r"\b(?:receta(?:\s+de)?|c[oó]mo\s+(?:hago|hacer)|cocinar?)\s+(.+)$",
+        raw,
+        re.I,
+    )
+    if recipe or re.search(r"\b(milanesa|tortilla|omelette|fideos\s+con\s+tuco)\b", lower):
+        dish = (recipe.group(1).strip() if recipe else "")
+        if not dish:
+            for key in ("milanesa", "tortilla", "omelette", "fideos con tuco"):
+                if key in lower:
+                    dish = key
+                    break
+        if dish:
+            out = run("kitchen_recipe", dish=dish, action="buscar")
+            try:
+                data = json.loads(out)
+                if data.get("speakable"):
+                    return str(data["speakable"])
+                if data.get("status") == "not_found":
+                    return str(data.get("message") or out)
+            except Exception:
+                pass
+            return out
 
     yt = re.match(
         r"^(?:busc[aá]|busca[r]?|pon[eé]|poneme|reproduc[ií])\s+(?:en\s+)?youtube\s+(.+)$",
@@ -466,10 +514,16 @@ def try_local_command(
         re.I,
     )
     if maps:
-        return run("open_maps", destination=maps.group(1).strip(), origin="")
+        dest = maps.group(1).strip()
+        if android:
+            return run("phone_hands", action="maps", target=dest)
+        return run("open_maps", destination=dest, origin="")
 
     if re.fullmatch(r"https?://\S+", raw.strip(), re.I):
-        return run("open_browser", url=raw.strip())
+        url = raw.strip()
+        if android:
+            return run("phone_hands", action="browser", target=url)
+        return run("open_browser", url=url)
 
     opened = re.search(
         r"(?:abr[ií]|abrime|abrir|abre|open|lanz[aá]|ejecut[aá]|and[aá]\s+a|"
@@ -503,6 +557,8 @@ def try_local_command(
     if search:
         query = search.group(1).strip()
         if lower.startswith("google"):
+            if android:
+                return run("phone_hands", action="search", target=query)
             return run("google", query=query)
         return run("web_search", query=query, max_results=5)
 
@@ -708,6 +764,8 @@ def _open_target(target: str, run: Callable[..., str], *, android: bool) -> str 
     from jarvis.bank_apps import is_banking
 
     if re.match(r"https?://", target, re.I):
+        if android:
+            return run("phone_hands", action="browser", target=target)
         return run("open_browser", url=target)
     lowered = target.lower().strip()
     if lowered in _WEB_TARGETS:

@@ -10,11 +10,16 @@ import shutil
 import time
 from pathlib import Path
 
-from jarvis.config import DATA_DIR, Settings
+from jarvis.config import DATA_DIR, ROOT, Settings
 from jarvis.security import safe_under
 
 DEFAULT_VOICE = "es-AR-ElenaNeural"
 _CACHE_DIR = DATA_DIR / "tts-cache"
+_PHRASE_CACHE_DIR = Path(
+    os.getenv("TTS_CACHE_DIR", "").strip() or str(DATA_DIR / "assets" / "tts_cache")
+)
+if not _PHRASE_CACHE_DIR.is_absolute():
+    _PHRASE_CACHE_DIR = ROOT / _PHRASE_CACHE_DIR
 _CACHE_MAX_CHARS = 140
 
 
@@ -80,6 +85,38 @@ def _cache_path(clean: str, settings: Settings, suffix: str) -> Path:
     return _CACHE_DIR / f"{_cache_key(clean, settings)}{suffix}"
 
 
+def _phrase_slug(clean: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9áéíóúüñÁÉÍÓÚÜÑ ]+", "", clean.lower()).strip()
+    return re.sub(r"\s+", "_", slug)[:80]
+
+
+def phrase_cache_dir() -> Path:
+    _PHRASE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return _PHRASE_CACHE_DIR
+
+
+def phrase_cache_count() -> int:
+    folder = phrase_cache_dir()
+    try:
+        return sum(1 for p in folder.iterdir() if p.suffix.lower() in {".wav", ".mp3"} and p.is_file())
+    except OSError:
+        return 0
+
+
+def _phrase_hit(clean: str, suffix: str) -> Path | None:
+    """Exact common-phrase WAV/MP3 under data/assets/tts_cache (0 ms Piper)."""
+    slug = _phrase_slug(clean)
+    if not slug:
+        return None
+    folder = phrase_cache_dir()
+    for ext in (suffix, ".wav", ".mp3"):
+        name = f"{slug}{ext if ext.startswith('.') else '.' + ext}"
+        candidate = folder / name
+        if candidate.is_file() and candidate.stat().st_size > 64:
+            return candidate
+    return None
+
+
 def audio_api_path(filename: str) -> str:
     name = Path(filename).name
     _assert_audio_name(name)
@@ -114,14 +151,27 @@ def _provider(settings: Settings) -> str:
 
 
 def first_speakable_sentence(text: str) -> str | None:
-    """Return first sentence when enough text arrived for early TTS."""
+    """Return first speakable chunk when enough text arrived for early TTS."""
     clean = " ".join((text or "").split())
-    if len(clean) < 12:
+    if len(clean) < 8:
         return None
     match = re.search(r"^(.+?[.!?…])(?:\s|$)", clean)
-    if match and len(match.group(1)) >= 10:
-        return match.group(1).strip()
-    if len(clean) >= 72:
+    if match:
+        first = match.group(1).strip()
+        if len(first) >= 12:
+            return first
+        rest = clean[len(first) :].lstrip()
+        if rest:
+            nxt = re.search(r"^(.+?[.!?…])(?:\s|$)", rest)
+            if nxt:
+                both = f"{first} {nxt.group(1).strip()}".strip()
+                if len(both) >= 10:
+                    return both
+            if len(clean) >= 18:
+                return clean if len(clean) <= 96 else clean[:96].rsplit(" ", 1)[0]
+        elif clean.endswith((".", "!", "?", "…")) and len(clean) >= 8:
+            return clean
+    if len(clean) >= 48:
         cut = clean[:72]
         sp = cut.rfind(" ")
         return (cut[:sp] if sp > 24 else cut).strip()
@@ -141,6 +191,11 @@ async def speak_to_file(settings: Settings, text: str, name: str | None = None) 
     use_edge = _provider(settings) in {"edge", "edge-tts"}
     suffix = ".mp3" if use_edge else ".wav"
     dest = DATA_DIR / (Path(stamp).stem + suffix)
+
+    hit = _phrase_hit(clean, suffix)
+    if hit is not None:
+        shutil.copy2(hit, dest)
+        return dest
 
     if len(clean) <= _CACHE_MAX_CHARS:
         cached = _cache_path(clean, settings, suffix)
@@ -163,7 +218,38 @@ async def speak_to_file(settings: Settings, text: str, name: str | None = None) 
                 shutil.copy2(path, cached)
         except OSError:
             pass
+        try:
+            from jarvis.tts_phrases import COMMON_PHRASES
+
+            normalized = " ".join(clean.split()).lower().rstrip(".")
+            known = {" ".join(p.split()).lower().rstrip(".") for p in COMMON_PHRASES}
+            if normalized in known or len(clean) <= 48:
+                slug_path = phrase_cache_dir() / f"{_phrase_slug(clean)}{path.suffix.lower()}"
+                if not slug_path.is_file():
+                    shutil.copy2(path, slug_path)
+                    try:
+                        from jarvis.tts_warmer import incrementar_contador_tts
+
+                        incrementar_contador_tts(1)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     return path
+
+
+async def warm_phrase_cache(settings: Settings, limit: int = 24) -> int:
+    """Pre-generate WAV for common acks (run once / on demand)."""
+    from jarvis.tts_phrases import COMMON_PHRASES
+
+    done = 0
+    for phrase in COMMON_PHRASES[: max(1, limit)]:
+        try:
+            await speak_to_file(settings, phrase, f"tts-warm-{done}")
+            done += 1
+        except Exception:
+            continue
+    return done
 
 
 async def _edge_mp3(settings: Settings, clean: str, stamp: str) -> Path:

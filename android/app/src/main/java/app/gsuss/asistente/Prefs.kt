@@ -3,7 +3,8 @@ package app.gsuss.asistente
 import android.content.Context
 
 class Prefs(context: Context) {
-    private val sp = context.getSharedPreferences("ilaria", Context.MODE_PRIVATE)
+    val appCtx: Context = context.applicationContext
+    private val sp = appCtx.getSharedPreferences("ilaria", Context.MODE_PRIVATE)
 
     var baseUrl: String
         get() = sp.getString("base", "") ?: ""
