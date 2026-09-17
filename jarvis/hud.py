@@ -300,13 +300,23 @@ def create_hud(state: AppState) -> FastAPI:
     async def wellness_smartwatch(request: Request) -> dict[str, Any]:
         """Sandbox smartwatch dump for HUD widgets (no cloud)."""
         user = require_user(request)
-        from jarvis.smartwatch_processor import procesar_datos_smartwatch
+        from jarvis.smartwatch_processor import load_metric_history, procesar_datos_smartwatch
 
         raw = await asyncio.to_thread(procesar_datos_smartwatch, user.username)
         try:
-            return json.loads(raw)
+            payload = json.loads(raw)
         except json.JSONDecodeError:
             return {"status": "error", "message": "Métricas ilegibles"}
+        # Optional longer sparkline window (?history_limit=365) backed by SQLite.
+        try:
+            hist_limit = int(request.query_params.get("history_limit") or 0)
+        except ValueError:
+            hist_limit = 0
+        if hist_limit > 0 and payload.get("status") == "success":
+            payload["history"] = await asyncio.to_thread(
+                load_metric_history, user.username, limit=hist_limit
+            )
+        return payload
 
     @app.get("/sync_qr.svg")
     async def sync_qr(request: Request) -> FileResponse:

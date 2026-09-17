@@ -25,50 +25,147 @@ def metrics_path(usuario: str) -> Path:
 
 
 def history_path(usuario: str) -> Path:
+    """Legacy JSON path (migrated once into SQLite)."""
     user = (usuario or "guest").strip().lower() or "guest"
     folder = DATA_DIR / "users" / user / "workspace"
     folder.mkdir(parents=True, exist_ok=True)
     return folder / "smartwatch_history.json"
 
 
-_HISTORY_MAX = 24
+def history_db_path(usuario: str) -> Path:
+    user = (usuario or "guest").strip().lower() or "guest"
+    folder = DATA_DIR / "users" / user / "workspace"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / "smartwatch_history.sqlite3"
+
+
+_HISTORY_MAX = 24  # default sparkline window (API can request more)
+_HISTORY_HARD_CAP = 50_000
+
+
+def _connect(usuario: str) -> Any:
+    import sqlite3
+
+    path = history_db_path(usuario)
+    conn = sqlite3.connect(str(path), timeout=5.0)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL NOT NULL,
+            t_label TEXT,
+            pasos INTEGER NOT NULL DEFAULT 0,
+            hr REAL NOT NULL DEFAULT 0,
+            hrv REAL NOT NULL DEFAULT 0,
+            sueno REAL NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts)")
+    conn.commit()
+    return conn
+
+
+def _migrate_json_if_needed(usuario: str) -> None:
+    """One-shot import of smartwatch_history.json into SQLite."""
+    json_path = history_path(usuario)
+    if not json_path.is_file():
+        return
+    marker = history_db_path(usuario).with_suffix(".sqlite3.migrated")
+    if marker.is_file():
+        return
+    try:
+        raw = json.loads(json_path.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError):
+        marker.write_text("empty-or-bad-json\n", encoding="utf-8")
+        return
+    if not isinstance(raw, list):
+        marker.write_text("not-a-list\n", encoding="utf-8")
+        return
+    conn = _connect(usuario)
+    try:
+        for i, row in enumerate(raw):
+            if not isinstance(row, dict):
+                continue
+            label = str(row.get("t") or "")
+            conn.execute(
+                "INSERT INTO metrics (ts, t_label, pasos, hr, hrv, sueno) VALUES (?,?,?,?,?,?)",
+                (
+                    float(row.get("ts") or (i + 1)),
+                    label,
+                    int(row.get("pasos") or 0),
+                    float(row.get("hr") or 0),
+                    float(row.get("hrv") or 0),
+                    float(row.get("sueno") or 0),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        json_path.replace(json_path.with_suffix(".json.bak"))
+    except OSError:
+        pass
+    marker.write_text(f"migrated {datetime.now().isoformat()}\n", encoding="utf-8")
 
 
 def append_metric_history(usuario: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Append one daily snapshot for HUD sparklines (local file, capped)."""
-    path = history_path(usuario)
-    history: list[dict[str, Any]] = []
-    if path.is_file():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8-sig"))
-            if isinstance(raw, list):
-                history = [row for row in raw if isinstance(row, dict)]
-        except (json.JSONDecodeError, OSError):
-            history = []
+    """Append one snapshot to SQLite history; return recent window for callers."""
+    _migrate_json_if_needed(usuario)
     point = {
         "t": payload.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M"),
         "pasos": int(payload.get("pasos_hoy") or 0),
         "hr": float(payload.get("hr_promedio_bpm") or 0),
         "hrv": float(payload.get("hrv_ms") or 0),
         "sueno": float(payload.get("horas_sueno_anoche") or 0),
+        "ts": float(payload.get("imported_at") or time.time()),
     }
-    history.append(point)
-    history = history[-_HISTORY_MAX:]
-    path.write_text(json.dumps(history, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    return history
-
-
-def load_metric_history(usuario: str) -> list[dict[str, Any]]:
-    path = history_path(usuario)
-    if not path.is_file():
-        return []
+    conn = _connect(usuario)
     try:
-        raw = json.loads(path.read_text(encoding="utf-8-sig"))
-        if isinstance(raw, list):
-            return [row for row in raw if isinstance(row, dict)][-_HISTORY_MAX:]
-    except (json.JSONDecodeError, OSError):
+        conn.execute(
+            "INSERT INTO metrics (ts, t_label, pasos, hr, hrv, sueno) VALUES (?,?,?,?,?,?)",
+            (point["ts"], point["t"], point["pasos"], point["hr"], point["hrv"], point["sueno"]),
+        )
+        # Soft prune extreme growth (years of data still fine under hard cap)
+        count = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
+        if count > _HISTORY_HARD_CAP:
+            cut = count - _HISTORY_HARD_CAP
+            conn.execute(
+                "DELETE FROM metrics WHERE id IN (SELECT id FROM metrics ORDER BY ts ASC LIMIT ?)",
+                (cut,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return load_metric_history(usuario, limit=_HISTORY_MAX)
+
+
+def load_metric_history(usuario: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+    """Load recent telemetry points (newest last) for HUD sparklines."""
+    _migrate_json_if_needed(usuario)
+    if not history_db_path(usuario).is_file() and not history_path(usuario).is_file():
         return []
-    return []
+    lim = _HISTORY_MAX if limit is None else max(1, min(int(limit), _HISTORY_HARD_CAP))
+    conn = _connect(usuario)
+    try:
+        rows = conn.execute(
+            "SELECT t_label, pasos, hr, hrv, sueno, ts FROM metrics ORDER BY ts DESC LIMIT ?",
+            (lim,),
+        ).fetchall()
+    finally:
+        conn.close()
+    out: list[dict[str, Any]] = []
+    for label, pasos, hr, hrv, sueno, ts in reversed(rows):
+        out.append(
+            {
+                "t": label or datetime.fromtimestamp(float(ts or time.time())).strftime("%Y-%m-%d %H:%M"),
+                "pasos": int(pasos or 0),
+                "hr": float(hr or 0),
+                "hrv": float(hrv or 0),
+                "sueno": float(sueno or 0),
+            }
+        )
+    return out
 
 
 def _default_payload() -> dict[str, Any]:
@@ -123,7 +220,7 @@ def procesar_datos_smartwatch(usuario_activo: str) -> str:
             "hrv_ms": hrv,
             "nivel_energia_estimado": energia,
             "last_sync": last,
-            "history": load_metric_history(usuario_activo),
+            "history": load_metric_history(usuario_activo, limit=90),
             "speech": ensure_disclaimer(speak),
         }
         return json.dumps(reporte, ensure_ascii=False)
