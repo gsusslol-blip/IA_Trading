@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,6 +30,7 @@ from jarvis.personality import (
     build_system_prompt,
     guard_filial_reply,
     messages_with_lock,
+    split_system_prompt,
 )
 from jarvis.security import redact_secrets, secret_values
 from jarvis.tools import PHONE_BLOCKED_TOOLS, make_executor, tools_for_surface
@@ -164,6 +166,11 @@ class Brain:
             pass
 
     def _chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> Any:
+        # Keep Ollama model + KV prompt cache warm (default unload is ~5 min).
+        if self.endpoint.label in {"ollama", "llamacpp"}:
+            extra = dict(kwargs.pop("extra_body", None) or {})
+            extra.setdefault("keep_alive", os.getenv("OLLAMA_KEEP_ALIVE", "60m"))
+            kwargs["extra_body"] = extra
         if self.endpoint.label == "groq":
             last: BaseException | None = None
             for model in groq_model_candidates(self.settings):
@@ -345,7 +352,21 @@ class Brain:
         history.append({"role": "user", "content": text})
         self._persist_history(session_id)
 
+        from jarvis.fast_path import try_fast_path
         from jarvis.local import try_local_command
+
+        surface = getattr(self.actions, "client_surface", "hud")
+        fast = try_fast_path(
+            text,
+            self.execute,
+            surface=surface,
+            allowed=self.allowed_tools,
+        )
+        if fast:
+            answer = self._finish(fast)
+            self._store(session_id, answer)
+            yield answer
+            return
 
         commanded = try_local_command(
             text,
@@ -353,7 +374,7 @@ class Brain:
             self.memory,
             self.settings,
             self.allowed_tools,
-            surface=getattr(self.actions, "client_surface", "hud"),
+            surface=surface,
         )
         if commanded:
             answer = self._finish(commanded)
@@ -378,7 +399,7 @@ class Brain:
         cap = 6 if actionish else (10 if small else MAX_HISTORY)
         history[:] = history[-cap:]
 
-        system = build_system_prompt(
+        system_static, system_live = split_system_prompt(
             self.settings,
             self.memory,
             self.actions,
@@ -396,10 +417,14 @@ class Brain:
         )
         # Action turns: trim chat context hard for lower TTFT.
         hist_for_llm = _trim_history_for_llm(history, keep=4 if actionish else cap)
+        # Static first (KV-cache prefix) → LIVE system → history. Never put the clock
+        # inside the static blob or Ollama recomputes the whole prompt every minute.
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system},
-            *hist_for_llm,
+            {"role": "system", "content": system_static},
         ]
+        if system_live.strip():
+            messages.append({"role": "system", "content": system_live})
+        messages.extend(hist_for_llm)
         if small:
             messages = messages_with_lock(messages, is_owner=self.is_owner)
         if actionish:

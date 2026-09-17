@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from jarvis.fast_path import match_fast_path, try_fast_path, try_fast_path_router
 from jarvis.config import DATA_DIR
 
 _TOOL_ALIASES: dict[str, str] = {
