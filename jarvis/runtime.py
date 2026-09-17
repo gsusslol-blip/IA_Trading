@@ -258,6 +258,12 @@ def main() -> None:
         start_tts_warm(settings, limit=16)
     except Exception as exc:  # noqa: BLE001
         print(f"[WARM_UP] skip: {exc}")
+    try:
+        from jarvis.health_inbox import start_health_inbox_watcher
+
+        start_health_inbox_watcher(settings)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[INBOX] skip: {exc}")
     start_wake_listener(state)
     start_vision(state)
     if os.getenv("JARVIS_OPEN_BROWSER", "1") == "0":
