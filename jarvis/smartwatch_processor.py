@@ -24,6 +24,53 @@ def metrics_path(usuario: str) -> Path:
     return folder / "smartwatch_metrics.json"
 
 
+def history_path(usuario: str) -> Path:
+    user = (usuario or "guest").strip().lower() or "guest"
+    folder = DATA_DIR / "users" / user / "workspace"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / "smartwatch_history.json"
+
+
+_HISTORY_MAX = 24
+
+
+def append_metric_history(usuario: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Append one daily snapshot for HUD sparklines (local file, capped)."""
+    path = history_path(usuario)
+    history: list[dict[str, Any]] = []
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(raw, list):
+                history = [row for row in raw if isinstance(row, dict)]
+        except (json.JSONDecodeError, OSError):
+            history = []
+    point = {
+        "t": payload.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "pasos": int(payload.get("pasos_hoy") or 0),
+        "hr": float(payload.get("hr_promedio_bpm") or 0),
+        "hrv": float(payload.get("hrv_ms") or 0),
+        "sueno": float(payload.get("horas_sueno_anoche") or 0),
+    }
+    history.append(point)
+    history = history[-_HISTORY_MAX:]
+    path.write_text(json.dumps(history, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return history
+
+
+def load_metric_history(usuario: str) -> list[dict[str, Any]]:
+    path = history_path(usuario)
+    if not path.is_file():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        if isinstance(raw, list):
+            return [row for row in raw if isinstance(row, dict)][-_HISTORY_MAX:]
+    except (json.JSONDecodeError, OSError):
+        return []
+    return []
+
+
 def _default_payload() -> dict[str, Any]:
     return {
         "status": "no_data",
@@ -76,6 +123,7 @@ def procesar_datos_smartwatch(usuario_activo: str) -> str:
             "hrv_ms": hrv,
             "nivel_energia_estimado": energia,
             "last_sync": last,
+            "history": load_metric_history(usuario_activo),
             "speech": ensure_disclaimer(speak),
         }
         return json.dumps(reporte, ensure_ascii=False)
@@ -109,6 +157,7 @@ def escribir_metricas_demo(
     if source_file:
         payload["source_file"] = source_file
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    append_metric_history(usuario_activo, payload)
     return path
 
 
@@ -144,6 +193,66 @@ def importar_csv_basico(usuario_activo: str, csv_path: Path) -> Path:
     )
 
 
+def importar_gpx_basico(usuario_activo: str, gpx_path: Path) -> Path:
+    """Import GPX track: average HR from extensions + rough step estimate from distance."""
+    import math
+    import xml.etree.ElementTree as ET
+
+    gpx_path = Path(gpx_path)
+    if not gpx_path.is_file():
+        raise FileNotFoundError(str(gpx_path))
+    root = ET.parse(gpx_path).getroot()
+    # Strip namespaces for simpler finds
+    for node in root.iter():
+        if "}" in node.tag:
+            node.tag = node.tag.split("}", 1)[1]
+
+    hrs: list[float] = []
+    coords: list[tuple[float, float]] = []
+    for trkpt in root.findall(".//trkpt"):
+        try:
+            lat = float(trkpt.attrib.get("lat") or 0)
+            lon = float(trkpt.attrib.get("lon") or 0)
+        except ValueError:
+            continue
+        if lat or lon:
+            coords.append((lat, lon))
+        for el in trkpt.iter():
+            tag = (el.tag or "").lower()
+            if tag in {"hr", "heartrate"} and el.text:
+                try:
+                    hrs.append(float(el.text))
+                except ValueError:
+                    pass
+
+    def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+        r = 6371000.0
+        p1, p2 = math.radians(a[0]), math.radians(b[0])
+        dp = math.radians(b[0] - a[0])
+        dl = math.radians(b[1] - a[1])
+        x = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+        return 2 * r * math.asin(min(1.0, math.sqrt(x)))
+
+    dist_m = 0.0
+    for i in range(1, len(coords)):
+        dist_m += _haversine_m(coords[i - 1], coords[i])
+    # ~0.78 m per step walking heuristic
+    pasos = int(dist_m / 0.78) if dist_m > 0 else 0
+    hr = sum(hrs) / len(hrs) if hrs else 70.0
+    if not coords and not hrs:
+        raise ValueError("GPX sin track points / HR usable")
+
+    return escribir_metricas_demo(
+        usuario_activo,
+        pasos=pasos,
+        sueno=7.0,
+        hr=hr,
+        hrv=55.0,
+        source="health_inbox_gpx",
+        source_file=gpx_path.name,
+    )
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -154,8 +263,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.csv:
         out = importar_csv_basico(args.user, args.csv)
-        print(f"[SMARTWATCH] CSV importado → {out}")
+        print(f"[SMARTWATCH] CSV importado -> {out}")
     else:
         out = escribir_metricas_demo(args.user)
-        print(f"[SMARTWATCH] Demo escrito → {out}")
+        print(f"[SMARTWATCH] Demo escrito -> {out}")
     print(procesar_datos_smartwatch(args.user))

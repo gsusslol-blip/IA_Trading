@@ -402,6 +402,46 @@
     .metric-row strong { color: var(--text-main); font-weight: 600; }
     .text-green { color: var(--ok) !important; }
     .text-warn { color: #ffb020 !important; }
+    .watch-panel .watch-main {
+      font-size: 13px;
+      color: var(--text-main);
+      font-weight: 600;
+      margin: 0 0 8px;
+    }
+    .watch-panel .watch-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .watch-panel .watch-stat {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      padding: 8px 10px;
+    }
+    .watch-panel .watch-stat span {
+      display: block;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .watch-panel .watch-stat strong {
+      font-size: 15px;
+      color: var(--text-main);
+    }
+    .watch-panel .spark-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .watch-panel .spark-row svg {
+      flex: 1;
+      height: 28px;
+      overflow: visible;
+    }
     .sync-panel {
       text-align: center;
     }
@@ -564,11 +604,20 @@
         <div class="metric-row"><span>LAN UDP</span><strong id="metric-lan">—</strong></div>
         <div class="metric-row"><span>Red</span><strong id="metric-net-mode">—</strong></div>
         <div class="metric-row"><span>WAN</span><strong id="metric-wan">—</strong></div>
-        <div class="metric-row"><span>Reloj</span><strong id="metric-watch">—</strong></div>
         <div class="metric-row"><span>Home Assistant</span><strong id="metric-ha">—</strong></div>
         <div class="metric-row"><span>RAM</span><strong id="metric-ram">—</strong></div>
         <div class="metric-row"><span>Latencia</span><strong id="metric-lat">—</strong></div>
         <div class="metric-row"><span>Versión</span><strong id="metric-version">—</strong></div>
+      </div>
+      <div class="widget-box watch-panel">
+        <h3>Reloj</h3>
+        <div class="watch-main" id="metric-watch">sin sync</div>
+        <div class="watch-stats">
+          <div class="watch-stat"><span>HR</span><strong id="metric-watch-hr">—</strong></div>
+          <div class="watch-stat"><span>HRV</span><strong id="metric-watch-hrv">—</strong></div>
+        </div>
+        <div class="spark-row"><span>HR</span><svg id="spark-hr" viewBox="0 0 120 28" preserveAspectRatio="none"></svg></div>
+        <div class="spark-row"><span>HRV</span><svg id="spark-hrv" viewBox="0 0 120 28" preserveAspectRatio="none"></svg></div>
       </div>
       <div class="widget-box">
         <h3>Dispositivo móvil</h3>
@@ -1245,6 +1294,28 @@
     }
     setInterval(pollAlerts, 4000);
 
+    function drawSpark(svgId, values, color) {
+      const svg = document.getElementById(svgId);
+      if (!svg) return;
+      const w = 120, h = 28, pad = 2;
+      const nums = (values || []).filter((v) => Number.isFinite(v));
+      if (nums.length < 2) {
+        svg.innerHTML = "";
+        return;
+      }
+      const min = Math.min(...nums);
+      const max = Math.max(...nums);
+      const span = Math.max(1e-6, max - min);
+      const pts = nums.map((v, i) => {
+        const x = pad + (i / (nums.length - 1)) * (w - pad * 2);
+        const y = h - pad - ((v - min) / span) * (h - pad * 2);
+        return x.toFixed(1) + "," + y.toFixed(1);
+      }).join(" ");
+      svg.innerHTML =
+        '<polyline fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" points="' +
+        pts + '"></polyline>';
+    }
+
     async function refreshMetrics() {
       const ollamaEl = document.getElementById("metric-ollama");
       const ttsEl = document.getElementById("metric-tts");
@@ -1321,15 +1392,25 @@
       try {
         const watch = await fetch("/api/wellness/smartwatch").then((r) => r.json());
         const watchEl = document.getElementById("metric-watch");
+        const hrEl = document.getElementById("metric-watch-hr");
+        const hrvEl = document.getElementById("metric-watch-hrv");
         if (watchEl) {
           if (watch.status === "success") {
             watchEl.textContent =
               (watch.pasos_hoy || 0) + " pasos · " + String(watch.nivel_energia_estimado || "").split(".")[0];
-            watchEl.className = "text-green";
+            watchEl.className = "watch-main text-green";
             watchEl.title = watch.speech || "";
+            if (hrEl) hrEl.textContent = Math.round(watch.hr_promedio_bpm || 0) + " bpm";
+            if (hrvEl) hrvEl.textContent = Math.round(watch.hrv_ms || 0) + " ms";
+            drawSpark("spark-hr", (watch.history || []).map((p) => Number(p.hr) || 0), "#ff5f4f");
+            drawSpark("spark-hrv", (watch.history || []).map((p) => Number(p.hrv) || 0), "#4fd6ff");
           } else {
             watchEl.textContent = "sin sync";
-            watchEl.className = "text-warn";
+            watchEl.className = "watch-main text-warn";
+            if (hrEl) hrEl.textContent = "—";
+            if (hrvEl) hrvEl.textContent = "—";
+            drawSpark("spark-hr", [], "#ff5f4f");
+            drawSpark("spark-hrv", [], "#4fd6ff");
           }
         }
       } catch (e) {}

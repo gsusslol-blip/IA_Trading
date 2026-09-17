@@ -85,19 +85,26 @@ def shaker(rng: np.random.Generator) -> np.ndarray:
 
 
 def hard_kick(rng: np.random.Generator, root_hz: float = 51.0) -> np.ndarray:
-    """Distorted kick with a long tuned tail: the backbone of hardtech."""
-    n = samples(0.58)
+    """Distorted kick with a tuned tail: the backbone of hardtech.
+
+    The tail is kept short enough that consecutive kicks do not smear into each other at
+    160 BPM, and the grit comes from clipping a squared harmonic layer, not from level.
+    """
+    n = samples(0.46)
     t = t_axis(n)
-    pitch = root_hz + 210.0 * np.exp(-t / 0.012) + 46.0 * np.exp(-t / 0.05)
-    punch = np.sin(2.0 * np.pi * np.cumsum(pitch) / SR) * exp_env(n, 0.09)
-    tail = np.sin(2.0 * np.pi * root_hz * t) * exp_env(n, 0.30)
-    tail += 0.35 * np.sin(2.0 * np.pi * root_hz * 2.0 * t) * exp_env(n, 0.16)
+    pitch = root_hz + 240.0 * np.exp(-t / 0.010) + 52.0 * np.exp(-t / 0.042)
+    punch = np.sin(2.0 * np.pi * np.cumsum(pitch) / SR) * exp_env(n, 0.075)
+    tail = np.sin(2.0 * np.pi * root_hz * t) * exp_env(n, 0.24)
+    tail += 0.38 * np.sin(2.0 * np.pi * root_hz * 2.0 * t) * exp_env(n, 0.13)
+    # squared harmonics driven hard: the mid crunch that makes a hard kick cut on a big system
+    grit = hard_clip(np.sin(2.0 * np.pi * root_hz * 3.0 * t) + 0.7 * np.sin(2.0 * np.pi * root_hz * 5.0 * t), 6.0)
+    grit = filt(grit, "high", 220.0, order=2) * exp_env(n, 0.055) * 0.32
     click_n = samples(0.006)
     click = filt(noise(click_n, "blue", rng), "high", 3200.0) * np.linspace(1.0, 0.0, click_n) ** 2
-    body = hard_clip(punch * 1.5 + tail * 1.1, drive=2.6)
-    body = saturate(body, 2.2)
-    body[:click_n] += click * 0.35
-    return filt(body, "high", 32.0, order=2) * 0.95
+    body = hard_clip(punch * 1.7 + tail * 1.15, drive=4.0)
+    body = saturate(body + grit, 3.0)
+    body[:click_n] += click * 0.4
+    return filt(body, "high", 34.0, order=2) * 0.95
 
 
 def industrial_clap(rng: np.random.Generator) -> np.ndarray:

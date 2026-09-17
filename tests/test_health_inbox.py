@@ -96,6 +96,28 @@ class HealthInboxTests(unittest.TestCase):
                 self.assertEqual(report["hr_promedio_bpm"], 64)
                 self.assertEqual(report["hrv_ms"], 68)
                 self.assertIn("Óptima", report["nivel_energia_estimado"])
+                self.assertGreaterEqual(len(report.get("history") or []), 1)
+
+    def test_gpx_drop_avg_hr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("jarvis.health_inbox.DATA_DIR", root), patch(
+                "jarvis.smartwatch_processor.DATA_DIR", root
+            ):
+                gpx = (
+                    '<?xml version="1.0"?>'
+                    '<gpx><trk><trkseg>'
+                    '<trkpt lat="-34.60" lon="-58.38"><extensions><hr>60</hr></extensions></trkpt>'
+                    '<trkpt lat="-34.601" lon="-58.381"><extensions><hr>80</hr></extensions></trkpt>'
+                    "</trkseg></trk></gpx>"
+                )
+                drop = inbox_dir("gsuss") / "run.gpx"
+                drop.write_text(gpx, encoding="utf-8")
+                result = procesar_archivo_inbox("gsuss", drop)
+                self.assertEqual(result["status"], "success")
+                report = json.loads(procesar_datos_smartwatch("gsuss"))
+                self.assertEqual(report["hr_promedio_bpm"], 70.0)
+                self.assertGreater(report["pasos_hoy"], 0)
 
 
 if __name__ == "__main__":
