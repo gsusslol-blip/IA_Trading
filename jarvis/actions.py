@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import operator
 import os
 import re
@@ -25,6 +26,7 @@ from jarvis.bank_apps import is_banking
 from jarvis.bus import EventBus
 from jarvis.config import DATA_DIR, Settings
 from jarvis.security import safe_under
+from jarvis.undo import UndoQueue
 
 WORKSPACE = DATA_DIR / "workspace"
 WORKSPACE.mkdir(parents=True, exist_ok=True)
@@ -137,16 +139,15 @@ class Actions:
         self.device_note = ""
         self.android_upgrade_hint = ""
         self.phone_queue: list[dict[str, Any]] = []
-        self._undo: dict[str, Any] | None = None
+        self._undo_q = UndoQueue(ttl_seconds=30.0)
         self.last_action_label = ""
 
     def push_undo(self, kind: str, **payload: Any) -> None:
-        self._undo = {"kind": kind, **payload, "ts": time.time()}
+        self._undo_q.push(kind, **payload)
 
     def undo_last(self) -> str:
-        item = self._undo
-        self._undo = None
-        if not item or (time.time() - float(item.get("ts") or 0)) > 30:
+        item = self._undo_q.pop()
+        if not item:
             return "No hay nada reciente para deshacer."
         kind = str(item.get("kind") or "")
         if kind == "volume":
@@ -325,6 +326,68 @@ class Actions:
             return f"That path is a file: {folder.name}"
         names = sorted(p.name + ("/" if p.is_dir() else "") for p in folder.iterdir())
         return "\n".join(names[:80]) or "(empty workspace)"
+
+    def analyze_workspace(self) -> str:
+        from jarvis.workspace_manager import analyze_workspace as _analyze
+
+        return _analyze(self.workspace, timezone=self.settings.timezone)
+
+    def kitchen_recipe(
+        self,
+        comida: str = "",
+        recipe_text: str = "",
+        action: str = "buscar",
+    ) -> str:
+        from jarvis.kitchen_manager import buscar_o_generar_receta, listar_recetas_disponibles
+
+        kind = (action or "buscar").strip().lower()
+        if kind in {"listar", "list", "catalogo", "catálogo", "list_recipes"}:
+            result = listar_recetas_disponibles(self.workspace)
+            try:
+                self.daily_journal("Listó el catálogo de recetas.")
+            except Exception:
+                pass
+            return result
+
+        result = buscar_o_generar_receta(
+            comida,
+            self.workspace,
+            llm_fallback_content=(recipe_text or None),
+            save=True,
+        )
+        try:
+            data = json.loads(result)
+            if data.get("status") == "success" and data.get("source") == "local_db":
+                self.daily_journal(f"Consulta de cocina: {data.get('receta', {}).get('nombre') or comida}")
+            elif data.get("status") == "success" and data.get("source") == "llm_generated":
+                self.daily_journal(f"Receta generada y guardada: {comida}")
+        except Exception:
+            pass
+        return result
+
+    def music_action(self, action: str, **params: Any) -> str:
+        from jarvis.music_day import ejecutar_comando_musical
+
+        return ejecutar_comando_musical(action, params, actions=self)
+
+    def purge_tts_cache(self, days: int = 7) -> str:
+        from jarvis.workspace_manager import purge_old_tts_cache
+
+        return json.dumps(purge_old_tts_cache(days_limit=days), ensure_ascii=False)
+
+    def backup_notes(self) -> str:
+        from jarvis.workspace_manager import backup_user_notes
+
+        user_root = self.workspace.parent
+        memory_path = user_root / "memory.json"
+        return json.dumps(
+            backup_user_notes(
+                workspace=self.workspace,
+                user_root=user_root,
+                memory_path=memory_path if memory_path.is_file() else None,
+            ),
+            ensure_ascii=False,
+        )
 
     def read_file(self, relative: str) -> str:
         try:

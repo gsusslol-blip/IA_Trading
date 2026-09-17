@@ -536,6 +536,10 @@
         <div class="metric-row"><span>Ollama LLM</span><strong class="text-green" id="metric-ollama">—</strong></div>
         <div class="metric-row"><span>Puerto HUD</span><strong id="metric-port">—</strong></div>
         <div class="metric-row"><span>Voz</span><strong id="metric-tts">—</strong></div>
+        <div class="metric-row"><span>Caché TTS</span><strong id="metric-piper-cache">—</strong></div>
+        <div class="metric-row"><span>LAN UDP</span><strong id="metric-lan">—</strong></div>
+        <div class="metric-row"><span>Home Assistant</span><strong id="metric-ha">—</strong></div>
+        <div class="metric-row"><span>RAM</span><strong id="metric-ram">—</strong></div>
         <div class="metric-row"><span>Latencia</span><strong id="metric-lat">—</strong></div>
         <div class="metric-row"><span>Versión</span><strong id="metric-version">—</strong></div>
       </div>
@@ -1153,16 +1157,15 @@
           if (nextEl) nextEl.textContent = report.next_reminder || "sin timers";
           if (actEl) actEl.textContent = report.last_action || "—";
           if (contEl) contEl.textContent = report.continue_hint || "—";
-          if (report.continue_hint) {
-            add("jarvis", "Continuidad: «" + report.continue_hint + "». Decí deshacer si la última acción fue un error.");
-          }
+          // Continuidad / sugerencias: solo métricas UI, no otro mensaje hablado al boot.
         }
       } catch (e) {}
       if (!greeted) {
         add("jarvis", name ? "Hola " + name + ", ya estoy acá." : "Hola… ya estoy acá.");
       }
+      // Sin Ollama: aviso en vivo (texto), no TTS extra al arranque.
       if (!data.has_llm) {
-        add("jarvis", "Sin Ollama ni key. Clima, notas y búsqueda andan; para charla completa levantá gemma2:2b o pegá Groq en Perfil.");
+        setLive("Sin Ollama/Groq — clima/notas andan; charla completa en Perfil.", true);
       }
       if (canRecord) {
         // Do NOT auto-enable Libre: music/speakers false-trigger the mic and Ilaria talks over audio.
@@ -1201,6 +1204,10 @@
       const ttsEl = document.getElementById("metric-tts");
       const portEl = document.getElementById("metric-port");
       const verEl = document.getElementById("metric-version");
+      const cacheEl = document.getElementById("metric-piper-cache");
+      const lanEl = document.getElementById("metric-lan");
+      const haEl = document.getElementById("metric-ha");
+      const ramEl = document.getElementById("metric-ram");
       try {
         const h = await fetch("/health").then((r) => r.json());
         if (portEl) portEl.textContent = "Activo";
@@ -1215,6 +1222,29 @@
           ollamaEl.textContent = me.has_llm ? "OK" : "OFF";
           ollamaEl.className = me.has_llm ? "text-green" : "text-warn";
         }
+      } catch (e) {}
+      try {
+        const stack = await fetch("/api/stack-health").then((r) => r.json());
+        if (ollamaEl) {
+          ollamaEl.textContent = stack.ollama ? "ONLINE" : "OFF";
+          ollamaEl.className = stack.ollama ? "text-green" : "text-warn";
+        }
+        if (cacheEl) cacheEl.textContent = (stack.piper_cache_phrases || 0) + " frases";
+        if (lanEl) {
+          lanEl.textContent = stack.udp_discover
+            ? ("LISTEN " + (stack.udp_port || 8788))
+            : "DOWN";
+          lanEl.className = stack.udp_discover ? "text-green" : "text-warn";
+        }
+        if (haEl) {
+          const ha = String(stack.home_assistant || "—");
+          haEl.textContent = ha === "SUCCESS" ? "ONLINE" : (ha === "NOT_CONFIGURED" ? "N/C" : "OFF");
+          haEl.className = ha === "SUCCESS" ? "text-green" : "text-warn";
+        }
+        if (ramEl && stack.ram_load_pct != null) {
+          ramEl.textContent = stack.ram_load_pct + "% (" + (stack.ram_available_gb || "?") + " GB libres)";
+        }
+        if (ttsEl && stack.piper) ttsEl.textContent = "PIPER";
       } catch (e) {}
       try {
         const meta = await fetch("/api/meta").then((r) => r.json());

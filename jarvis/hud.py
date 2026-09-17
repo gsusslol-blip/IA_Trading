@@ -25,7 +25,13 @@ from jarvis.packs import PACKS, normalize_pack_ids, public_packs, routine_slot, 
 from jarvis.piper_tts import piper_available
 from jarvis.state import AppState
 from jarvis.stt import transcribe_audio
-from jarvis.tts import audio_api_path, audio_media_type, resolve_audio_file, speak_to_file
+from jarvis.tts import (
+    audio_api_path,
+    audio_media_type,
+    phrase_cache_count,
+    resolve_audio_file,
+    speak_to_file,
+)
 
 COOKIE = "jarvis_sid"
 _HEAVY_WAIT = "Demasiadas operaciones. Esperá un segundo."
@@ -248,6 +254,29 @@ def create_hud(state: AppState) -> FastAPI:
             "tts": "piper" if piper_available() else "edge",
         }
 
+    @app.get("/api/stack-health")
+    async def stack_health(request: Request) -> dict[str, Any]:
+        """Lightweight diagnostics for the HUD metrics panel."""
+        require_user(request)
+        from jarvis.discover import DISCOVER_PORT
+        from jarvis.self_healing import get_system_health
+
+        report = await asyncio.to_thread(get_system_health, state.settings)
+        ram = report.get("resource_usage") or {}
+        return {
+            "ollama": bool(report.get("ollama_alive")),
+            "piper": bool(report.get("piper_ready")),
+            "piper_cache_phrases": phrase_cache_count(),
+            "hud": report.get("hud_health") == "OK",
+            "hud_port": report.get("hud_port"),
+            "udp_discover": bool(report.get("udp_discover_bound")),
+            "udp_port": report.get("udp_port") or DISCOVER_PORT,
+            "home_assistant": report.get("home_assistant"),
+            "ram_load_pct": ram.get("ram_load_pct"),
+            "ram_available_gb": ram.get("ram_available_gb"),
+            "version": __version__,
+        }
+
     @app.get("/api/android/update")
     async def android_meta() -> dict[str, object]:
         return android_update()
@@ -426,34 +455,22 @@ def create_hud(state: AppState) -> FastAPI:
         settings = state.settings_for(user)
         brain = state.brain_for(user)
         now = datetime.now(ZoneInfo(settings.timezone))
-        pending = brain.memory.pending_reminders()
         next_rem = brain.memory.next_reminder_line()
-        journal = ""
-        try:
-            journal = brain.actions.read_daily_journal()
-        except Exception:
-            journal = ""
-        weather = ""
-        try:
-            city = (user.city or brain.memory.recall("ciudad") or "Buenos Aires").strip()
-            if city and not city.startswith("No fact"):
-                from jarvis.tools import make_executor
+        # Boot must stay fast: no weather / journal / stack probes in the spoken path.
+        from jarvis.welcome_reporter import format_welcome_voice, generar_welcome_report_cotidiano
 
-                weather = make_executor(settings, brain.memory, brain.actions)(
-                    "weather",
-                    json.dumps({"city": city}, ensure_ascii=False),
-                )
-                if isinstance(weather, str) and len(weather) > 100:
-                    weather = weather.split(".")[0][:90]
-        except Exception:
-            weather = ""
-        voice = welcome_script(
-            address=user.address_as.strip() or user.display_name,
-            hour=now.hour,
-            pending=pending if "No pending" not in pending else "",
-            journal=journal if "todavia no" not in journal.lower() else "",
-            weather=weather if isinstance(weather, str) else "",
+        cotidiano = generar_welcome_report_cotidiano(
+            username=user.username,
+            display_name=user.address_as.strip() or user.display_name,
+            workspace=brain.actions.workspace,
+            timezone=settings.timezone,
+            stack=None,
         )
+        who = user.address_as.strip() or user.display_name or user.username
+        voice_base = welcome_script(address=who, hour=now.hour)
+        voice = format_welcome_voice(cotidiano, voice_base)
+        # Hard guard: never speak more than the greeting sentence.
+        voice = (voice.split(".")[0].strip() or f"Hola, {who}") + "."
         audio_url = None
         try:
             path = await speak_to_file(
@@ -474,6 +491,8 @@ def create_hud(state: AppState) -> FastAPI:
             "next_reminder": next_rem,
             "last_action": getattr(brain.actions, "last_action_label", "") or "",
             "continue_hint": continue_hint,
+            "cotidiano": cotidiano,
+            "stack": None,
         }
 
     @app.get("/api/mission")

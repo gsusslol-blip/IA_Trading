@@ -1,4 +1,11 @@
-"""UDP LAN beacon so the phone finds this PC without typing an IP."""
+"""UDP LAN beacon so the phone finds this PC without typing an IP.
+
+Primary protocol (Android Kotlin LanFind): probe ``ILARIA?`` → ``ILARIA1`` + JSON url.
+Legacy/simple ping (sample Java clients): ``ILARIA_CLIENT_PING`` → ``ILARIA_SERVER_ACK``
+(+ also the JSON reply so modern apps still get the full HUD URL).
+
+UDP listens on DISCOVER_PORT (8788), never on the HTTP HUD port (8787).
+"""
 
 from __future__ import annotations
 
@@ -11,7 +18,9 @@ from jarvis.config import Settings
 from jarvis.lan import lan_ipv4
 
 PROBE = b"ILARIA?"
+PROBE_PING = b"ILARIA_CLIENT_PING"
 MAGIC = b"ILARIA1"
+ACK_SIMPLE = b"ILARIA_SERVER_ACK"
 DISCOVER_PORT = 8788
 
 
@@ -44,6 +53,10 @@ def parse_reply(raw: bytes) -> str | None:
     return url
 
 
+def _normalize_probe(data: bytes) -> str:
+    return data.strip().decode("utf-8", errors="ignore").strip()
+
+
 def start_discover(settings: Settings) -> None:
     if settings.hud_host not in {"0.0.0.0", "::"}:
         return
@@ -63,11 +76,16 @@ def start_discover(settings: Settings) -> None:
                 data, addr = sock.recvfrom(256)
             except OSError:
                 return
-            if data.strip() != PROBE:
+            probe = _normalize_probe(data)
+            if probe not in {"ILARIA?", "ILARIA_CLIENT_PING"}:
                 continue
-            reply = build_reply(hud_base_url(settings.hud_port))
+            base = hud_base_url(settings.hud_port)
             try:
-                sock.sendto(reply, addr)
+                if probe == "ILARIA_CLIENT_PING":
+                    # Simple ACK for Java-style clients (they use rinfo.address as PC IP).
+                    sock.sendto(ACK_SIMPLE, addr)
+                # Always send JSON URL reply (Kotlin LanFind + any client that parses MAGIC).
+                sock.sendto(build_reply(base), addr)
             except OSError:
                 continue
 

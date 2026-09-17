@@ -329,6 +329,44 @@ def try_local_command(
             return run("phone_hands", action="whatsapp", target=wa[0], text=wa[1])
         return run("compose_whatsapp", phone=wa[0], text=wa[1])
 
+    if re.search(
+        r"\b(qu[eé]\s+recetas|list[aá]\s+(?:mis\s+)?recetas|cat[aá]logo\s+de\s+recetas|"
+        r"recetas\s+disponibles|qu[eé]\s+sab[eé]s\s+cocinar)\b",
+        lower,
+    ):
+        out = run("kitchen_recipe", action="listar", dish="")
+        try:
+            data = json.loads(out)
+            if data.get("speakable"):
+                return str(data["speakable"])
+        except Exception:
+            pass
+        return out
+
+    recipe = re.search(
+        r"\b(?:receta(?:\s+de)?|c[oó]mo\s+(?:hago|hacer)|cocinar?)\s+(.+)$",
+        raw,
+        re.I,
+    )
+    if recipe or re.search(r"\b(milanesa|tortilla|omelette|fideos\s+con\s+tuco)\b", lower):
+        dish = (recipe.group(1).strip() if recipe else "")
+        if not dish:
+            for key in ("milanesa", "tortilla", "omelette", "fideos con tuco"):
+                if key in lower:
+                    dish = key
+                    break
+        if dish:
+            out = run("kitchen_recipe", dish=dish, action="buscar")
+            try:
+                data = json.loads(out)
+                if data.get("speakable"):
+                    return str(data["speakable"])
+                if data.get("status") == "not_found":
+                    return str(data.get("message") or out)
+            except Exception:
+                pass
+            return out
+
     yt = re.match(
         r"^(?:busc[aá]|busca[r]?|pon[eé]|poneme|reproduc[ií])\s+(?:en\s+)?youtube\s+(.+)$",
         raw,
