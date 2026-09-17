@@ -128,7 +128,7 @@ def _normalize_json_payload(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def importar_json_inbox(usuario: str, json_path: Path) -> Path:
-    raw = json.loads(json_path.read_text(encoding="utf-8"))
+    raw = json.loads(json_path.read_text(encoding="utf-8-sig"))
     if not isinstance(raw, dict):
         raise ValueError("JSON debe ser un objeto {pasos, sueño, hr, hrv}")
     payload = _normalize_json_payload(raw)
