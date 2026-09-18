@@ -138,6 +138,16 @@ def tick(brain: Brain) -> str | None:
             )
     if not autonomy_enabled() or not brain.is_owner:
         return " ".join(notices) if notices else None
+
+    # Soft heal notices still surface as text; skip chatty impulses while quiet.
+    try:
+        from jarvis.quiet_mode import is_quiet
+
+        if is_quiet():
+            return " ".join(notices) if notices else None
+    except Exception:
+        pass
+
     snap = observe(brain)
     who = (brain.settings.user_name or "pá").strip() or "pá"
     impulse = decide(snap, who=who)

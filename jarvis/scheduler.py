@@ -75,6 +75,19 @@ def _hourly_slot(timezone: str) -> str:
 
 
 async def _announce(brain, spoken: str, telegram_send: TelegramSend | None) -> None:
+    quiet = False
+    try:
+        from jarvis.quiet_mode import is_quiet
+
+        quiet = is_quiet()
+    except Exception:
+        quiet = False
+
+    # Quiet-Mode: text-only in HUD — no Piper, no beep (bus respects quiet).
+    if quiet:
+        brain.bus.push(spoken, audio_url=None, beep=False)
+        return
+
     audio_url = None
     try:
         path = await speak_to_file(

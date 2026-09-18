@@ -23,7 +23,7 @@ class EventBus:
         self._next_id = 1
         self.telegram_chat_id: int | None = None
 
-    def push(self, text: str, audio_url: str | None = None) -> Alert:
+    def push(self, text: str, audio_url: str | None = None, *, beep: bool = True) -> Alert:
         clean = " ".join(text.split())
         with self._lock:
             alert = Alert(
@@ -35,7 +35,16 @@ class EventBus:
             self._next_id += 1
             self._items.append(alert)
             self._items[:] = self._items[-80:]
-        _beep()
+        if beep:
+            try:
+                from jarvis.quiet_mode import is_quiet
+
+                if is_quiet():
+                    beep = False
+            except Exception:
+                pass
+        if beep:
+            _beep()
         return alert
 
     def since(self, after_id: int) -> list[Alert]:

@@ -294,7 +294,22 @@ def create_hud(state: AppState) -> FastAPI:
             "sync_file_age_seconds": net.get("sync_file_age_seconds"),
             "qr_ready": bool(net.get("qr_ready")),
             "version": __version__,
+            "quiet_mode": _quiet_payload(),
         }
+
+    def _quiet_payload() -> dict[str, Any]:
+        try:
+            from jarvis.quiet_mode import snapshot
+
+            return snapshot().as_dict()
+        except Exception as exc:  # noqa: BLE001
+            return {"active": False, "reason": f"error:{exc}"}
+
+    @app.get("/api/quiet-mode")
+    async def quiet_mode_status(request: Request) -> dict[str, Any]:
+        """Live Quiet-Mode snapshot for HUD (deterministic Win32 focus)."""
+        require_user(request)
+        return await asyncio.to_thread(_quiet_payload)
 
     @app.get("/api/wellness/smartwatch")
     async def wellness_smartwatch(request: Request) -> dict[str, Any]:
@@ -617,18 +632,22 @@ def create_hud(state: AppState) -> FastAPI:
         return data
 
     @app.get("/api/alerts")
-    async def alerts(request: Request, after: int = 0) -> dict[str, list[dict[str, object]]]:
+    async def alerts(request: Request, after: int = 0) -> dict[str, object]:
         user = require_user(request)
         items = state.brain_for(user).bus.since(after)
+        quiet = _quiet_payload()
         return {
+            "quiet": bool(quiet.get("active")),
+            "quiet_reason": quiet.get("reason") or "",
             "items": [
                 {
                     "id": item.id,
                     "text": item.text,
-                    "audio_url": item.audio_url,
+                    # Strip audio when quiet so HUD stays text-only.
+                    "audio_url": None if quiet.get("active") else item.audio_url,
                 }
                 for item in items
-            ]
+            ],
         }
 
     @app.post("/api/chat")
