@@ -264,6 +264,14 @@ def split_system_prompt(
     now = datetime.now(ZoneInfo(settings.timezone))
     stamp = now.strftime("%Y-%m-%d %H:%M (%A)")
     facts = memory.as_prompt()
+    try:
+        from jarvis.memory_condenser import format_long_term_prompt
+
+        ltm = format_long_term_prompt(getattr(actions, "workspace", None))
+        if ltm:
+            facts = f"{facts}\n{ltm}" if facts and facts != "(none yet)" else ltm
+    except Exception:
+        pass
     name = settings.assistant_name
     user = settings.user_name
     rank = (

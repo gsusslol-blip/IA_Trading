@@ -270,6 +270,12 @@ def main() -> None:
         start_ha_fatigue_watcher(settings)
     except Exception as exc:  # noqa: BLE001
         print(f"[HA-FATIGUE] skip: {exc}")
+    try:
+        from jarvis.memory_condenser import start_memory_condenser_watcher
+
+        start_memory_condenser_watcher(settings)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[LTM] skip: {exc}")
     start_wake_listener(state)
     start_vision(state)
     if os.getenv("JARVIS_OPEN_BROWSER", "1") == "0":
