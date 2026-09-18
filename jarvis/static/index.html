@@ -625,6 +625,7 @@
         <div class="metric-row"><span>Red</span><strong id="metric-net-mode">—</strong></div>
         <div class="metric-row"><span>WAN</span><strong id="metric-wan">—</strong></div>
         <div class="metric-row"><span>Home Assistant</span><strong id="metric-ha">—</strong></div>
+        <div class="metric-row"><span>Quiet-Mode</span><strong id="metric-quiet">—</strong></div>
         <div class="metric-row"><span>RAM</span><strong id="metric-ram">—</strong></div>
         <div class="metric-row"><span>Latencia</span><strong id="metric-lat">—</strong></div>
         <div class="metric-row"><span>Versión</span><strong id="metric-version">—</strong></div>
@@ -1307,10 +1308,12 @@
       try {
         const res = await fetch("/api/alerts?after=" + alertAfter);
         const data = await res.json();
+        const quiet = !!data.quiet;
         for (const item of data.items || []) {
           alertAfter = Math.max(alertAfter, item.id);
           add("jarvis", item.text);
-          setLive("aviso", true);
+          setLive(quiet ? "quiet" : "aviso", true);
+          if (quiet) continue;
           if (item.audio_url) await playAudioUrl(item.audio_url, item.text);
           else await speak(item.text);
         }
@@ -1382,6 +1385,7 @@
       const netModeEl = document.getElementById("metric-net-mode");
       const wanEl = document.getElementById("metric-wan");
       const haEl = document.getElementById("metric-ha");
+      const quietEl = document.getElementById("metric-quiet");
       const ramEl = document.getElementById("metric-ram");
       const tunnelUrlEl = document.getElementById("hud-tunnel-url");
       const qrImg = document.getElementById("hud-qr");
@@ -1439,6 +1443,18 @@
           const ha = String(stack.home_assistant || "—");
           haEl.textContent = ha === "SUCCESS" ? "ONLINE" : (ha === "NOT_CONFIGURED" ? "N/C" : "OFF");
           haEl.className = ha === "SUCCESS" ? "text-green" : "text-warn";
+        }
+        if (quietEl) {
+          const q = stack.quiet_mode || {};
+          if (q.active) {
+            quietEl.textContent = "ON · " + String(q.reason || "quiet").slice(0, 28);
+            quietEl.className = "text-warn";
+            quietEl.title = (q.process || "") + " " + (q.title || "");
+          } else {
+            quietEl.textContent = "OFF";
+            quietEl.className = "text-green";
+            quietEl.title = q.reason || "";
+          }
         }
         if (ramEl && stack.ram_load_pct != null) {
           ramEl.textContent = stack.ram_load_pct + "% (" + (stack.ram_available_gb || "?") + " GB libres)";
